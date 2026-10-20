@@ -1,3 +1,8 @@
+<p align="center">
+  <a href="https://github.com/buguniaoOVO/deskrawl-hub-client/stargazers"><img src="docs/star-support.svg" alt="给桌破中控点个 Star" width="360"></a>
+  <img src="docs/afdian-support.png" alt="扫码为阿丸好饿发电" width="280">
+</p>
+
 # 桌破中控客户端
 
 桌破中控客户端 1.0 使用 WinForms、WebView2 和内置运行模块，在桌面窗口中提供控制总览、账号实例、掉落记录与运行设置。关闭窗口会将客户端缩小到任务栏；退出按钮会关闭客户端及其内置运行模块。
