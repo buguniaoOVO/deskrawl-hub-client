@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>DeskrawlHubClient</AssemblyName>
+    <RootNamespace>DeskrawlHubClient</RootNamespace>
+    <Version>1.0</Version>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <InformationalVersion>1.0</InformationalVersion>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\Deskrawl.ico</ApplicationIcon>
+    <PublishSingleFile>true</PublishSingleFile>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <SelfContained>true</SelfContained>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3719.77" />
+    <EmbeddedResource Include="Assets\engine.payload.gz" LogicalName="DeskrawlHubClient.Assets.engine.payload.gz" />
+    <EmbeddedResource Include="Assets\demon-icon.png" LogicalName="DeskrawlHubClient.WebAssets.client-icon.png" />
+    <EmbeddedResource Include="WebAssets\index.html" LogicalName="DeskrawlHubClient.WebAssets.index.html" />
+    <EmbeddedResource Include="WebAssets\client.css" LogicalName="DeskrawlHubClient.WebAssets.client.css" />
+    <EmbeddedResource Include="WebAssets\client.js" LogicalName="DeskrawlHubClient.WebAssets.client.js" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,54 @@
+/* TBH助手 ModernUI palette: white surfaces, teal/gold/purple accents. */
+:root,
+[data-theme="light"] {
+  --bg: #f6f8fc;
+  --bg-2: #ffffff;
+  --panel: #ffffff;
+  --panel-2: #f6f8fc;
+  --panel-3: #eef2f8;
+  --border: #dee4ed;
+  --border-2: #cbd4e0;
+  --text: #18273d;
+  --text-2: #42546d;
+  --muted: #5a6c83;
+  --accent: #08738b;
+  --accent-2: #6f48be;
+  --accent-dim: #e8f3f6;
+  --ok: #287b58;
+  --ok-dim: #eaf4ee;
+  --danger: #c84f50;
+  --danger-dim: #faeded;
+  --warn: #ad6a0c;
+  --warn-dim: #fbf3e6;
+  --shadow: 0 6px 20px rgba(24, 39, 61, .07);
+  --grad: linear-gradient(135deg, #08738b, #6f48be);
+  --radius: 16px;
+  --radius-sm: 11px;
+  color-scheme: light;
+}
+
+body { background: var(--bg); color: var(--text); }
+.sidebar { background: #fff; border-right-color: var(--border); }
+.topbar { background: rgba(255, 255, 255, .94); border-bottom-color: var(--border); }
+.logo { background: var(--grad); }
+.nav-btn.active {
+  background: #eaf4f5;
+  border-color: #d4e8eb;
+  color: #08738b;
+}
+.nav-btn.active .ni { color: #08738b; }
+.panel, .kpi, .metric-card {
+  border-color: var(--border);
+  box-shadow: var(--shadow);
+}
+.btn, input, select, textarea { border-radius: 10px; }
+.btn { font-weight: 600; }
+input, select, textarea {
+  border-color: var(--border-2);
+  color: var(--text);
+}
+.tbl-head { background: var(--panel-2); }
+::-webkit-scrollbar-thumb { background: #cbd4e0; }
+::-webkit-scrollbar-thumb:hover { background: #9aa9bc; }
+
+/* Keep the existing dark-theme choice available while using TBH surfaces. */
