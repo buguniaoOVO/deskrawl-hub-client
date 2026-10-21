@@ -41,10 +41,10 @@ if ($LASTEXITCODE -ne 0) {
 $builtClient = Join-Path $publishDirectory 'DeskrawlHubClient.exe'
 $finalClient = Join-Path $publishDirectory '桌破中控.exe'
 $installPathFile = Join-Path $PSScriptRoot 'install-path.local.txt'
-$installedClient = if (Test-Path -LiteralPath $installPathFile -PathType Leaf) {
-    (Get-Content -LiteralPath $installPathFile -Raw).Trim()
-} else {
-    ''
+$installedClient = ''
+if (Test-Path -LiteralPath $installPathFile -PathType Leaf) {
+    $installPathValue = Get-Content -LiteralPath $installPathFile -Raw
+    if ($null -ne $installPathValue) { $installedClient = $installPathValue.Trim() }
 }
 $runningClient = Get-CimInstance Win32_Process -Filter "Name='桌破中控.exe'" -ErrorAction SilentlyContinue |
     Where-Object { $_.ExecutablePath -eq $finalClient -or ($installedClient -and $_.ExecutablePath -eq $installedClient) }
