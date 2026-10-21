@@ -89,13 +89,13 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .crumb { display: flex; align-items: center; gap: 10px; color: #718198; font-size: 11px; }
 .crumb i { color: #b5c0ce; font-style: normal; }
 .crumb strong { color: #1b2430; font-size: 12px; font-weight: 680; }
-.topbar-right { display: flex; align-items: center; gap: 13px; }
+.topbar-right { display: flex; align-items: center; gap: 9px; }
 .live-status { display: flex; align-items: center; gap: 8px; color: #52647b; font-size: 10px; }
 .top-divider { width: 1px; height: 20px; background: var(--line); }
 .top-time { min-width: 58px; color: #718198; font: 11px "Segoe UI", sans-serif; font-variant-numeric: tabular-nums; }
-.icon-button { width: 34px; height: 34px; display: grid; place-items: center; color: #52647b; background: #fff; border: 1px solid #cbd5e1; border-radius: 7px; cursor: pointer; }
+.icon-button { min-width: 34px; height: 34px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 0 9px; color: #52647b; background: #fff; border: 1px solid #cbd5e1; border-radius: 7px; font-size: 10px; font-weight: 620; white-space: nowrap; cursor: pointer; }
 .icon-button:hover { color: var(--lime); border-color: #8bb6f5; background: #f7faff; }
-.icon-button svg { width: 16px; height: 16px; }
+.icon-button svg { width: 16px; height: 16px; flex: 0 0 16px; }
 .exit-button { color: #67788b; }
 .exit-button:hover { color: #b94348; border-color: #e5b7b8; background: #fff8f8; }
 .page-root { width: min(100%, 1680px); margin: 0 auto; padding: 27px clamp(22px, 3vw, 48px) 54px; }
@@ -171,6 +171,15 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .rarity-black { color: #356c9f; }
 .account-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 13px; }
 .account-actions .btn { flex: 1 1 auto; }
+.section-head-main { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.section-head-titleline { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.section-head-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.section-head-actions .btn { min-height: 34px; }
+.section-head-actions .btn svg { width: 15px; height: 15px; }
+.frame-cap-settings-panel { margin-bottom: 15px; }
+.frame-cap-settings-panel .form-grid { max-width: 680px; }
+.frame-cap-settings-panel .form-field { align-content: center; }
+.frame-cap-settings-panel .select { max-width: 180px; }
 .offline-copy { margin-top: 14px; padding: 10px 11px; color: #8b5b2f; background: #fbf6ef; border: 1px solid #f0e4d5; border-radius: 6px; font-size: 10px; }
 
 .btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 34px; padding: 0 11px; color: #435265; background: #fff; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 10px; font-weight: 640; cursor: pointer; transition: color .14s, background .14s, border-color .14s, transform .14s; }
@@ -453,4 +462,8 @@ html, body { width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: h
   html, body { min-width: 0; }
   .page-root { padding-inline: 16px; }
   .app-footer { left: 68px; padding-inline: 16px; }
+  .top-time, .top-divider { display: none; }
+  .live-status span:not(.state-led) { display: none; }
+  .topbar-right { gap: 6px; }
+  .icon-button { gap: 4px; padding-inline: 7px; }
 }

@@ -9,10 +9,11 @@
     gameWindows: {}, timer: 0, busy: new Set(), lastError: '',
     updateSettings: { repositoryUrl: '', enabled: true, ignoredVersion: '', lastCheckedUtc: 0 },
     updateStatus: { kind: 'waiting', message: 'GitHub 地址待配置。' },
+    globalFrameCap: { enabled: false, fps: 10 }, frameCapStatuses: {},
     wikiEquipment: { byId: new Map(), byEnglish: new Map(), byChinese: new Map(), count: 0 },
   };
   const viewNames = {
-    overview: '控制总览', loot: '掉落记录', settings: '运行设置',
+    overview: '账号状态', loot: '掉落记录', settings: '运行设置',
   };
   const api = async (path, options = {}) => {
     let response;
@@ -228,6 +229,14 @@
     </section>`;
   }
 
+  function renderGlobalFrameCapSettings() {
+    const setting = state.globalFrameCap || { enabled: false, fps: 10 };
+    return `<section class="panel frame-cap-settings-panel">
+      <div class="panel-title"><div><h3>全局锁帧</h3><p>账号状态页的开关会统一应用到当前和后续启动的游戏。</p></div><span class="state-pill ${setting.enabled ? 'active' : ''}">${setting.enabled ? `已开启 · ${Number(setting.fps) || 10} 帧` : '已关闭'}</span></div>
+      <div class="form-grid"><div class="form-field"><label for="global-frame-cap-rate">全局帧率上限</label><select class="select" id="global-frame-cap-rate" data-act="global-frame-cap-rate"><option value="10" ${Number(setting.fps) === 30 ? '' : 'selected'}>10 帧</option><option value="30" ${Number(setting.fps) === 30 ? 'selected' : ''}>30 帧</option></select></div><div class="form-field"><span class="form-hint">挡位变更会即时应用；关闭状态下只保存挡位。</span></div></div>
+    </section>`;
+  }
+
   function renderOverview() {
     const data = state.overview;
     if (!data) {
@@ -239,7 +248,10 @@
     const online = instances.filter((item) => item.paired).length;
     const auto = instances.filter((item) => item.paired && item.loop?.running).length;
     const games = instances.filter((item) => item.paired && item.game?.running).length;
-    $('#page-root').innerHTML = `${intro('CONTROL / LIVE VIEW', '控制总览', '查看账号连接、游戏进程和近期战利品。')}
+    const runningGames = instances.filter((item) => item.game?.running);
+    const allWindowsHidden = runningGames.length > 0 && runningGames.every((item) => state.gameWindows[String(item.port)] === 'hidden');
+    const capEnabled = state.globalFrameCap.enabled === true;
+    $('#page-root').innerHTML = `${intro('ACCOUNT STATUS / LIVE VIEW', '账号状态', '查看账号连接、游戏进程和近期战利品。')}
       <section class="hero-band">
         <div class="hero-orbit"></div>
         <div class="hero-copy"><div class="hero-kicker">LOCAL OPERATIONS / ${esc(new Date().toLocaleDateString('zh-CN'))}</div>
@@ -253,11 +265,28 @@
         ${metric('市场珍品', `${number(summary.steam_found)}<small>件</small>`, '已记录的可交易物品', 'copper', 'loot')}
         ${metric('近期掉落', `${number(summary.drops)}<small>条</small>`, `远古记录 ${number(summary.ancient)} 条`, '', 'box')}
       </section>
-      <div class="section-head"><div><h2>助手实例</h2><p>账号卡片提供单个实例的控制项。</p></div><div class="section-meta"><span class="count-tag">${instances.length} 个实例</span></div></div>
-      <section class="account-grid">${instances.length ? instances.map(renderAccount).join('') : empty('box', '没有发现助手实例', '到运行设置中检查扫描目录与端口范围。')}</section>`;
+      <div class="section-head"><div class="section-head-main"><div class="section-head-titleline"><h2>账号状态</h2><div class="section-head-actions">
+        <button class="btn compact" data-act="window-toggle-all" title="${allWindowsHidden ? '显示全部游戏窗口' : '隐藏全部游戏窗口'}" ${runningGames.length ? '' : 'disabled'}>${icon(allWindowsHidden ? 'eye' : 'eye-off')}${allWindowsHidden ? '显示全部窗口' : '隐藏全部窗口'}</button>
+        <button class="btn compact ${capEnabled ? 'danger' : 'soft'}" data-act="global-frame-cap-toggle" aria-pressed="${capEnabled}" title="全局锁帧 ${capEnabled ? '已开启' : '已关闭'}">${icon(capEnabled ? 'stop' : 'spark')}${capEnabled ? '关闭全局锁帧' : '开启全局锁帧'}</button>
+        </div><span class="count-tag">${instances.length} 个账号</span></div><p>${esc(globalFrameCapSummary())}</p></div></div>
+      <section class="account-grid">${instances.length ? instances.map(renderAccount).join('') : empty('box', '没有发现账号', '到运行设置中检查扫描目录与端口范围。')}</section>`;
     $('#side-port').textContent = data.ports?.length ? `${data.ports[0]}—${data.ports[data.ports.length - 1]}` : '—';
     $('#side-version').textContent = data.versions?.hub ? `v${data.versions.hub}` : '本地';
     setEngineState(true, `${number(summary.online ?? online)} 个助手在线`);
+  }
+
+  function globalFrameCapSummary() {
+    const settings = state.globalFrameCap;
+    if (settings.enabled !== true) return '全局锁帧已关闭。';
+    const statuses = Object.values(state.frameCapStatuses).filter((status) => Number(status.processId) > 0);
+    if (!statuses.length) return `全局锁帧已开启，${Number(settings.fps) || 10} 帧；游戏启动后应用。`;
+    const blocked = statuses.filter((status) => status.state === 'restart-required');
+    if (blocked.length) return `全局锁帧已开启；${blocked.length} 个游戏需重启后应用。`;
+    const failed = statuses.find((status) => !status.applied && status.state !== 'waiting');
+    if (failed) return `全局锁帧未能应用：${failed.message || '请检查游戏状态。'}`;
+    const applied = statuses.filter((status) => status.applied).length;
+    const waiting = statuses.length - applied;
+    return `全局锁帧 ${Number(settings.fps) || 10} 帧；${applied}/${statuses.length} 个游戏已确认${waiting ? `，${waiting} 个等待游戏就绪` : ''}。`;
   }
 
   function metric(label, value, note, tone, symbol) {
@@ -382,6 +411,7 @@
     }
     const ports = config.ports || {};
     $('#page-root').innerHTML = `${intro('PREFERENCES / LOCAL INSTANCE', '运行设置', '管理实例扫描目录、端口范围与 Sandboxie 路径。', button('rescan', '重新扫描', '', '', 'refresh'))}
+      ${renderGlobalFrameCapSettings()}
       ${renderUpdatePanel()}
       <section class="panel"><div class="panel-title"><div><h3>实例发现</h3><p>中控在这些目录查找助手实例与沙盒配置。</p></div><span class="count-tag">发现 ${number(state.config.installs?.length)} 个目录</span></div>
         <div class="form-grid">
@@ -443,6 +473,25 @@
     } catch { /* Game window state is an optional display detail. */ }
   }
 
+  async function toggleAllGameWindows() {
+    await loadGameWindows();
+    const games = activeInstances().filter((item) => item.game?.running);
+    if (!games.length) {
+      notify('当前没有运行中的游戏。', 'warn');
+      return;
+    }
+    const allHidden = games.every((item) => state.gameWindows[String(item.port)] === 'hidden');
+    const action = allHidden ? 'show' : 'hide';
+    let affected = 0;
+    for (const game of games) {
+      const result = await post('/api/game-win', { action, port: Number(game.port) });
+      if (result.ok === false) throw new Error(result.error || `账号 ${game.port} 的窗口操作失败。`);
+      affected += Number(result.count || 0);
+    }
+    await loadGameWindows();
+    notify(`${action === 'hide' ? '已隐藏' : '已恢复'} ${number(affected)} 个游戏窗口`);
+  }
+
   async function runAction(action, buttonNode, domEvent = null) {
     const port = buttonNode?.dataset.port ? Number(buttonNode.dataset.port) : 0;
     const busyKey = `${action}:${port || 'single'}`;
@@ -473,6 +522,14 @@
       }
       if (action === 'update-settings-save') {
         saveUpdateSettings();
+        return;
+      }
+      if (action === 'global-frame-cap-toggle') {
+        requestGlobalFrameCap(state.globalFrameCap.enabled !== true, state.globalFrameCap.fps);
+        return;
+      }
+      if (action === 'window-toggle-all') {
+        await toggleAllGameWindows();
         return;
       }
       if (action === 'refresh') {
@@ -586,10 +643,43 @@
     window.chrome?.webview?.postMessage({ type: 'save-update-settings', settings: state.updateSettings });
   }
 
+  function requestGlobalFrameCap(enabled, fps) {
+    const rate = Number(fps) === 30 ? 30 : 10;
+    state.globalFrameCap = { enabled: enabled === true, fps: rate };
+    if (state.view === 'overview') renderOverview();
+    window.chrome?.webview?.postMessage({ type: 'set-global-frame-cap', enabled: enabled === true, fps: rate });
+  }
+
+  function mergeGlobalFrameCapMessage(message) {
+    if (message.settings && typeof message.settings === 'object') {
+      state.globalFrameCap = { ...state.globalFrameCap, ...message.settings };
+    }
+    for (const status of message.statuses || []) {
+      if (status?.port != null) state.frameCapStatuses[String(status.port)] = status;
+    }
+    if (state.view === 'overview') renderOverview();
+    else if (state.view === 'settings' && state.config) renderSettings();
+  }
+
   function onHostMessage(event) {
     const message = event.data || {};
     if (message.type === 'wiki-equipment-updated') {
       loadWikiEquipment();
+      return;
+    }
+    if (message.type === 'frame-cap-settings-loaded'
+      || message.type === 'frame-cap-settings-updated'
+      || message.type === 'frame-cap-account-statuses') {
+      mergeGlobalFrameCapMessage(message);
+      if (message.type === 'frame-cap-settings-updated') {
+        const failures = Object.values(state.frameCapStatuses).some((status) =>
+          Number(status.processId) > 0 && !status.applied && status.state !== 'waiting');
+        notify(globalFrameCapSummary(), failures ? 'error' : '');
+      }
+      return;
+    }
+    if (message.type === 'global-frame-cap-error') {
+      notify(message.message || '全局锁帧设置没有保存。', 'error');
       return;
     }
     if (message.type !== 'update-settings-loaded' && message.type !== 'update-settings-saved') return;
@@ -711,6 +801,11 @@
       await runAction(actionButton.dataset.act, actionButton, event);
     }
   });
+  document.addEventListener('change', (event) => {
+    const rateSelect = event.target.closest('select[data-act="global-frame-cap-rate"]');
+    if (!rateSelect) return;
+    requestGlobalFrameCap(state.globalFrameCap.enabled === true, Number(rateSelect.value));
+  });
   document.addEventListener('keydown', (event) => {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'r') {
       event.preventDefault(); runAction('refresh');
@@ -721,6 +816,7 @@
   if (window.chrome?.webview) {
     window.chrome.webview.addEventListener('message', onHostMessage);
     window.chrome.webview.postMessage({ type: 'load-update-settings' });
+    window.chrome.webview.postMessage({ type: 'load-frame-cap-settings' });
   }
   loadWikiEquipment();
   $('.footer-version').textContent = `v${APP_VERSION}`;

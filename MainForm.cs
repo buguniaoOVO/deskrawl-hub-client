@@ -61,6 +61,7 @@ internal sealed class MainForm : Form
     {
         Timeout = TimeSpan.FromSeconds(2),
     };
+    private CoreWebView2? _webCore;
 
     private Process? _engine;
     private string _dataRoot = "";
@@ -74,6 +75,9 @@ internal sealed class MainForm : Form
     private bool _started;
     private bool _closing;
     private bool _allowExit;
+    private FrameCapLiveManager? _frameCapManager;
+    private System.Threading.Timer? _frameCapSyncTimer;
+    private readonly SemaphoreSlim _frameCapSyncGate = new(1, 1);
 
     internal MainForm()
     {
@@ -116,16 +120,21 @@ internal sealed class MainForm : Form
             _engineConfigPath = runtime.EngineConfigPath;
             _enginePath = runtime.EnginePath;
             _engineDirectory = runtime.EngineDirectory;
+            _frameCapManager = new FrameCapLiveManager(_dataRoot, WriteLog);
             StopEmbeddedEngineProcesses(runtime.EnginePath);
             _port = FindAvailablePort(ReadConfiguredPort(_engineConfigPath));
             StartEngine(runtime.EnginePath, runtime.EngineDirectory, _port);
             await WaitForEngineAsync(_port);
+            await SyncFrameCapAccountsAsync(publishStatus: false);
+            _frameCapSyncTimer = new System.Threading.Timer(
+                _ => _ = SyncFrameCapAccountsAsync(), null, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2));
 
             var userData = Path.Combine(_dataRoot, "WebView2");
             Directory.CreateDirectory(userData);
             var environment = await CoreWebView2Environment.CreateAsync(userDataFolder: userData);
             await _browser.EnsureCoreWebView2Async(environment);
-            ConfigureBrowser(_browser.CoreWebView2);
+            _webCore = _browser.CoreWebView2;
+            ConfigureBrowser(_webCore);
             _browser.Source = new Uri($"http://127.0.0.1:{_port}/", UriKind.Absolute);
             _browser.Visible = true;
             _startup.Visible = false;
@@ -237,6 +246,18 @@ internal sealed class MainForm : Form
             {
                 PostClientUpdateSettings(core, "update-settings-loaded", ReadClientUpdateSettings());
             }
+            else if (type == "load-frame-cap-settings")
+            {
+                PostGlobalFrameCapState(core, "frame-cap-settings-loaded");
+            }
+            else if (type == "set-global-frame-cap"
+                && root.TryGetProperty("fps", out JsonElement accountFpsElement)
+                && accountFpsElement.TryGetInt32(out int accountFps)
+                && root.TryGetProperty("enabled", out JsonElement accountEnabledElement)
+                && (accountEnabledElement.ValueKind is JsonValueKind.True or JsonValueKind.False))
+            {
+                _ = SetGlobalFrameCapAsync(accountEnabledElement.GetBoolean(), accountFps, core);
+            }
             else if (type == "save-update-settings"
                 && root.TryGetProperty("settings", out var settingsElement))
             {
@@ -279,6 +300,117 @@ internal sealed class MainForm : Form
     private static void PostClientUpdateSettings(CoreWebView2 core, string type, ClientUpdateSettings settings)
     {
         core.PostWebMessageAsJson(JsonSerializer.Serialize(new { type, settings }, ClientSettingsJsonOptions));
+    }
+
+    private async Task<AccountFrameCapStatus[]> SyncFrameCapAccountsAsync(bool publishStatus = true, bool waitForSync = false)
+    {
+        if (_closing || _frameCapManager is null || _port <= 0)
+            return [];
+        bool acquired = waitForSync
+            ? await _frameCapSyncGate.WaitAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false)
+            : await _frameCapSyncGate.WaitAsync(0).ConfigureAwait(false);
+        if (!acquired) return [];
+
+        try
+        {
+            using HttpResponseMessage response = await _http.GetAsync(
+                $"http://127.0.0.1:{_port}/api/overview").ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode) return [];
+            using JsonDocument document = JsonDocument.Parse(await response.Content.ReadAsStringAsync().ConfigureAwait(false));
+            if (!document.RootElement.TryGetProperty("instances", out JsonElement instances)
+                || instances.ValueKind != JsonValueKind.Array)
+                return [];
+
+            var processByPort = new Dictionary<int, int>();
+            foreach (JsonElement instance in instances.EnumerateArray())
+            {
+                if (!instance.TryGetProperty("port", out JsonElement portElement)
+                    || !portElement.TryGetInt32(out int port) || port <= 0)
+                    continue;
+                int pid = 0;
+                if (instance.TryGetProperty("game", out JsonElement game)
+                    && game.ValueKind == JsonValueKind.Object
+                    && game.TryGetProperty("running", out JsonElement running)
+                    && running.ValueKind == JsonValueKind.True
+                    && game.TryGetProperty("pid", out JsonElement pidElement)
+                    && pidElement.TryGetInt32(out int gamePid))
+                    pid = gamePid;
+                processByPort[port] = pid;
+            }
+
+            AccountFrameCapStatus[] changes = await _frameCapManager
+                .SyncAccountProcessesAsync(processByPort).ConfigureAwait(false);
+            if (publishStatus && changes.Length > 0 && _webCore is { } core && !IsDisposed)
+            {
+                try
+                {
+                BeginInvoke((Action)(() => PostGlobalFrameCapState(core, "frame-cap-account-statuses", changes)));
+                }
+                catch (InvalidOperationException) { }
+            }
+            return changes;
+        }
+        catch (Exception ex)
+        {
+            if (!_closing) WriteLog("Account frame-cap process sync failed: " + ex.GetBaseException().Message);
+            return [];
+        }
+        finally
+        {
+            _frameCapSyncGate.Release();
+        }
+    }
+
+    private async Task SetGlobalFrameCapAsync(bool enabled, int fps, CoreWebView2 responseCore)
+    {
+        try
+        {
+            if (_frameCapManager is null) throw new InvalidOperationException("全局锁帧设置尚未就绪。");
+            await SyncFrameCapAccountsAsync(publishStatus: false, waitForSync: true).ConfigureAwait(false);
+            AccountFrameCapStatus[] statuses = await _frameCapManager
+                .SetGlobalLimitAsync(enabled, fps).ConfigureAwait(false);
+            if (!IsDisposed)
+            {
+                try
+                {
+                    BeginInvoke((Action)(() => PostGlobalFrameCapState(
+                        responseCore, "frame-cap-settings-updated", statuses)));
+                }
+                catch (InvalidOperationException) { }
+            }
+        }
+        catch (Exception ex)
+        {
+            WriteLog("Global frame-cap update failed: " + ex.GetBaseException().Message);
+            if (!IsDisposed)
+            {
+                try
+                {
+                    BeginInvoke((Action)(() => responseCore.PostWebMessageAsJson(JsonSerializer.Serialize(new
+                    {
+                        type = "global-frame-cap-error",
+                        message = "全局锁帧设置没有保存。",
+                    }, ClientSettingsJsonOptions))));
+                }
+                catch (InvalidOperationException) { }
+            }
+        }
+    }
+
+    private void PostGlobalFrameCapState(
+        CoreWebView2 core,
+        string type,
+        IReadOnlyList<AccountFrameCapStatus>? changedStatuses = null)
+    {
+        GlobalFrameCapSettings settings = _frameCapManager?.SettingsSnapshot() ?? new GlobalFrameCapSettings();
+        IReadOnlyList<AccountFrameCapStatus> statuses = changedStatuses ??
+            _frameCapManager?.StatusSnapshot() ?? [];
+        core.PostWebMessageAsJson(JsonSerializer.Serialize(new
+        {
+            type,
+            settings,
+            statuses,
+        }, ClientSettingsJsonOptions));
     }
 
     private static string NormalizeGithubRepository(string? value)
@@ -582,6 +714,8 @@ internal sealed class MainForm : Form
         }
 
         _closing = true;
+        _frameCapSyncTimer?.Dispose();
+        _frameCapManager?.Dispose();
         _http.Dispose();
         if (_ownsEngine && _engine is { HasExited: false })
         {

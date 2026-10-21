@@ -1,6 +1,9 @@
 bin/
 obj/
 publish/
+Assets/DeskrawlConsole.FrameLimiter.dll
+Assets/DeskrawlConsole.FrameCap.Live.dll
+install-path.local.txt
 .vs/
 *.user
 *.suo

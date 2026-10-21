@@ -23,8 +23,11 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Remove="FrameLimiterPlugin\**\*.cs" />
+    <Compile Remove="FrameCapLivePlugin\**\*.cs" />
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3719.77" />
     <EmbeddedResource Include="Assets\engine.payload.gz" LogicalName="DeskrawlHubClient.Assets.engine.payload.gz" />
+    <EmbeddedResource Include="Assets\DeskrawlConsole.FrameCap.Live.dll" LogicalName="DeskrawlHubClient.Assets.DeskrawlConsole.FrameCap.Live.dll" />
     <EmbeddedResource Include="Assets\demon-icon.png" LogicalName="DeskrawlHubClient.WebAssets.client-icon.png" />
     <EmbeddedResource Include="WebAssets\index.html" LogicalName="DeskrawlHubClient.WebAssets.index.html" />
     <EmbeddedResource Include="WebAssets\client.css" LogicalName="DeskrawlHubClient.WebAssets.client.css" />
