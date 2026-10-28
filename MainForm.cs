@@ -59,7 +59,7 @@ internal sealed class MainForm : Form
     };
     private readonly HttpClient _http = new(new SocketsHttpHandler { UseProxy = false })
     {
-        Timeout = TimeSpan.FromSeconds(2),
+        Timeout = TimeSpan.FromSeconds(10),
     };
     private CoreWebView2? _webCore;
 
@@ -75,6 +75,8 @@ internal sealed class MainForm : Form
     private bool _started;
     private bool _closing;
     private bool _allowExit;
+    private AccountWorkspace? _workspace;
+    private HelperPane? _helperPane;
     private FrameCapLiveManager? _frameCapManager;
     private System.Threading.Timer? _frameCapSyncTimer;
     private readonly SemaphoreSlim _frameCapSyncGate = new(1, 1);
@@ -125,9 +127,10 @@ internal sealed class MainForm : Form
             _port = FindAvailablePort(ReadConfiguredPort(_engineConfigPath));
             StartEngine(runtime.EnginePath, runtime.EngineDirectory, _port);
             await WaitForEngineAsync(_port);
+            _workspace = new AccountWorkspace(_dataRoot, _engineConfigPath, _port);
             await SyncFrameCapAccountsAsync(publishStatus: false);
             _frameCapSyncTimer = new System.Threading.Timer(
-                _ => _ = SyncFrameCapAccountsAsync(), null, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2));
+                _ => _ = SyncFrameCapAccountsAsync(), null, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(10));
 
             var userData = Path.Combine(_dataRoot, "WebView2");
             Directory.CreateDirectory(userData);
@@ -229,6 +232,8 @@ internal sealed class MainForm : Form
     {
         try
         {
+            if (!Uri.TryCreate(e.Source, UriKind.Absolute, out var source)
+                || source.Host != "127.0.0.1" || source.Port != _port) return;
             using var message = JsonDocument.Parse(e.WebMessageAsJson);
             var root = message.RootElement;
             if (root.ValueKind == JsonValueKind.String
@@ -242,7 +247,11 @@ internal sealed class MainForm : Form
             if (root.ValueKind != JsonValueKind.Object
                 || !root.TryGetProperty("type", out var typeElement)) return;
             string? type = typeElement.GetString();
-            if (type == "load-update-settings")
+            if (type == "workspace-request")
+            {
+                _ = HandleWorkspaceRequestAsync(core, root.Clone());
+            }
+            else if (type == "load-update-settings")
             {
                 PostClientUpdateSettings(core, "update-settings-loaded", ReadClientUpdateSettings());
             }
@@ -279,6 +288,80 @@ internal sealed class MainForm : Form
         {
             WriteLog("Client settings message failed: " + ex.Message);
         }
+    }
+
+    private async Task HandleWorkspaceRequestAsync(CoreWebView2 core, JsonElement request)
+    {
+        string requestId = request.GetProperty("requestId").GetString() ?? "";
+        try
+        {
+            if (_workspace is null) throw new InvalidOperationException("账号环境尚未就绪。");
+            string action = request.GetProperty("action").GetString() ?? "";
+            string id = request.TryGetProperty("id", out var idValue) ? idValue.GetString() ?? "" : "";
+            object? result = null;
+            switch (action)
+            {
+                case "list":
+                    result = await _workspace.RefreshAsync();
+                    break;
+                case "lineage-list":
+                    result = await _workspace.ReadLineageSummariesAsync();
+                    break;
+                case "launch-helper":
+                case "launch-game":
+                    result = new { message = await _workspace.LaunchAsync(id, action == "launch-helper") };
+                    break;
+                case "save":
+                    await _workspace.SaveProfileAsync(id, request.GetProperty("helperDirectory").GetString() ?? "",
+                        request.GetProperty("gameExecutable").GetString() ?? "", request.GetProperty("gameLaunchMode").GetString() ?? "steam");
+                    result = await _workspace.RefreshAsync(true);
+                    break;
+                case "browse-helper":
+                    using (var dialog = new FolderBrowserDialog { Description = "选择此环境的 X1X 助手目录", UseDescriptionForTitle = true })
+                        result = new { path = dialog.ShowDialog(this) == DialogResult.OK ? dialog.SelectedPath : "" };
+                    break;
+                case "browse-game":
+                    using (var dialog = new OpenFileDialog { Title = "选择 Deskrawl.exe", Filter = "Deskrawl|Deskrawl.exe", CheckFileExists = true })
+                        result = new { path = dialog.ShowDialog(this) == DialogResult.OK ? dialog.FileName : "" };
+                    break;
+                case "open-helper":
+                case "open-browser":
+                    var connection = await _workspace.ConnectAsync(id);
+                    if (action == "open-browser")
+                        OpenExternalWebLink($"https://x1x.tw/deskrawl/helper/?lang=zh-CN#token={connection.Token}&port={connection.Port}");
+                    else
+                    {
+                        _helperPane?.Dispose();
+                        var pane = new HelperPane(_workspace, connection, _dataRoot,
+                            connection.Sandbox.Length == 0 ? "主机" : "沙箱 " + connection.Sandbox, CloseHelperPane);
+                        _helperPane = pane;
+                        Controls.Add(pane);
+                        pane.BringToFront();
+                        await pane.InitializeAsync();
+                    }
+                    result = new { message = action == "open-browser" ? "已打开此环境的配对页面。" : "" };
+                    break;
+                default:
+                    throw new InvalidOperationException("未知的账号操作。");
+            }
+            if (!_closing) core.PostWebMessageAsJson(JsonSerializer.Serialize(new { type = "workspace-result", requestId, ok = true, result }, ClientSettingsJsonOptions));
+        }
+        catch (Exception ex)
+        {
+            // Pairing credentials and remote page addresses stay out of logs.
+            if (!_closing) core.PostWebMessageAsJson(JsonSerializer.Serialize(new
+            {
+                type = "workspace-result", requestId, ok = false,
+                error = ex is HttpRequestException or TaskCanceledException ? "助手连接超时，请确认目标助手正在运行后重试。" : ex.Message,
+            }, ClientSettingsJsonOptions));
+        }
+    }
+
+    private void CloseHelperPane()
+    {
+        _helperPane?.Dispose();
+        _helperPane = null;
+        _browser.BringToFront();
     }
 
     private ClientUpdateSettings ReadClientUpdateSettings()
@@ -439,7 +522,7 @@ internal sealed class MainForm : Form
             AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate | DecompressionMethods.Brotli,
         };
         var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(15) };
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) DeskrawlHubClient/1.0");
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) DeskrawlHubClient/1.1");
         client.DefaultRequestHeaders.AcceptLanguage.ParseAdd("zh-CN,zh;q=0.9");
         return client;
     }
@@ -714,6 +797,8 @@ internal sealed class MainForm : Form
         }
 
         _closing = true;
+        _helperPane?.Dispose();
+        _workspace?.Dispose();
         _frameCapSyncTimer?.Dispose();
         _frameCapManager?.Dispose();
         _http.Dispose();

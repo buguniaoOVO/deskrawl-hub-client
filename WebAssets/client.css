@@ -444,6 +444,27 @@ html, body { width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: h
 .update-actions .btn[hidden] { display: none; }
 .update-repo-hint { margin-top: 6px; color: #718198; font-size: 11px; }
 
+.workspace-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; padding-top: 14px; border-top: 1px solid #e4ebf5; }
+.workspace-actions .btn { min-height: 36px; font-size: 13px; }
+.workspace-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 0; border-top: 1px solid #e4ebf5; }
+.workspace-row > div { min-width: 0; }
+.workspace-path { color: #687a93; font-size: 13px; line-height: 1.65; overflow-wrap: anywhere; margin-top: 6px; }
+.helper-note { padding: 16px 20px; border: 1px solid #dce7f9; border-radius: 8px; background: #f7faff; margin-bottom: 20px; color: #496181; font-size: 14px; line-height: 1.7; }
+.helper-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 400px), 1fr)); gap: 16px; }
+.helper-card { margin: 0; min-width: 0; }
+.helper-card h3, .workspace-dialog h3 { font-size: 18px; margin: 0; }
+.workspace-dialog { width: min(760px, calc(100vw - 40px)); max-height: calc(100vh - 50px); overflow: auto; border: 1px solid #d5e1f2; border-radius: 12px; padding: 26px; color: #1b2b40; background: #fff; }
+.workspace-dialog::backdrop { background: rgba(20, 35, 60, .25); }
+.workspace-dialog .form-field { margin-top: 20px; }
+.path-picker { display: flex; gap: 8px; }
+.path-picker .field { flex: 1; min-width: 0; }
+.path-picker .btn { flex: 0 0 auto; }
+.lineage-cell .data-value { color: #7048a8; }
+.lineage-cell .data-value.wait { color: #a66b21; }
+.data-note { margin-top: 4px; overflow: hidden; color: #8794a6; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+details.panel > summary { cursor: pointer; padding: 4px 0; font-size: 15px; font-weight: 600; color: #526681; }
+details.panel[open] > summary { margin-bottom: 20px; }
+
 @media (min-width: 1720px) {
   .account-grid { grid-template-columns: repeat(3, minmax(450px, 1fr)); }
 }
