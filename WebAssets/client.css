@@ -465,6 +465,49 @@ html, body { width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: h
 details.panel > summary { cursor: pointer; padding: 4px 0; font-size: 15px; font-weight: 600; color: #526681; }
 details.panel[open] > summary { margin-bottom: 20px; }
 
+/* Bloodline verdict and auction helper pages. */
+.link-button { padding: 0; color: #1f5fb5; background: transparent; border: 0; font-size: 11px; cursor: pointer; }
+.link-button:hover { color: #144a93; text-decoration: underline; }
+.lineage-grid, .auction-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 520px), 1fr)); gap: 16px; }
+.lineage-card { min-width: 0; padding: 22px; }
+.lineage-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.lineage-head h3 { margin: 0; color: #1b2430; font-size: 18px; font-weight: 700; }
+.lineage-sub { margin-top: 5px; color: #687a93; font-size: 13px; }
+.lineage-empty { margin: 14px 0 0; padding: 16px; color: #7a8798; background: #f7f9fc; border: 1px dashed #d9e2ee; border-radius: 8px; font-size: 13px; }
+.luck-meter { height: 8px; margin: 18px 0 16px; overflow: hidden; background: linear-gradient(90deg, #eef2f8, #e3eaf5); border-radius: 99px; }
+.luck-meter-fill { height: 100%; background: linear-gradient(90deg, #8a5cf0, #2f6fe0 55%, #16a06a); border-radius: 99px; transition: width .4s ease; }
+.luck-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.luck-cell { padding: 13px 14px; background: #f8fafd; border: 1px solid #e6edf6; border-radius: 9px; }
+.luck-label { color: #6b7d92; font-size: 12px; }
+.luck-value { margin-top: 6px; color: #1b2430; font: 700 22px/1.2 "Segoe UI", "Microsoft YaHei UI", sans-serif; font-variant-numeric: tabular-nums; }
+.luck-note { margin-top: 5px; color: #8394a8; font-size: 11px; }
+.lineage-meta { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 15px; color: #5e7087; font-size: 12px; }
+.lineage-details { margin-top: 15px; padding-top: 13px; border-top: 1px solid #e8edf4; }
+.lineage-details > summary { color: #34538a; font-size: 13px; font-weight: 620; cursor: pointer; }
+.lineage-details[open] > summary { margin-bottom: 12px; }
+.lineage-details h4 { margin: 0 0 8px; color: #4b5f78; font-size: 12px; font-weight: 650; }
+.lineage-columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr)); gap: 14px; }
+.lineage-list { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
+.lineage-list li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; background: #f8fafd; border: 1px solid #e9eff7; border-radius: 7px; font-size: 12px; }
+.lineage-list li span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lineage-list li span:last-child { flex: 0 0 auto; font-size: 11px; }
+.data-table.compact { min-width: 0; }
+.data-table.compact th, .data-table.compact td { padding: 8px 9px; font-size: 12px; }
+.auction-card { min-width: 0; }
+.auction-flow { margin-top: 18px; }
+.flow-list { margin: 12px 0 0; padding-left: 22px; color: #4e617a; font-size: 13px; line-height: 1.9; }
+.inline-note { font-size: 13px; line-height: 1.8; margin-bottom: 18px; }
+.unsupported-panel { margin-bottom: 18px; padding: 24px; background: #fbfcfe; border-color: #dbe5f1; }
+.unsupported-head { display: flex; align-items: flex-start; gap: 14px; }
+.unsupported-head > svg { width: 28px; height: 28px; flex: 0 0 28px; color: #3c6fb0; }
+.unsupported-head h2 { margin: 0; color: #1b2430; font-size: 18px; font-weight: 700; }
+.unsupported-head p { margin: 5px 0 0; color: #67788b; font-size: 13px; }
+.unsupported-body { margin-top: 14px; color: #4c5f76; font-size: 13px; line-height: 1.85; }
+.unsupported-body p { margin: 0 0 8px; }
+@media (max-width: 700px) {
+  .luck-grid { grid-template-columns: 1fr; }
+}
+
 @media (min-width: 1720px) {
   .account-grid { grid-template-columns: repeat(3, minmax(450px, 1fr)); }
 }

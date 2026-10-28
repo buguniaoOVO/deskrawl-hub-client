@@ -6,6 +6,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
+using System.Runtime.InteropServices;
 using Microsoft.Win32;
 
 namespace DeskrawlHubClient;
@@ -24,6 +25,13 @@ internal sealed record WorkspaceAccount(string Id, string Name, string Sandbox, 
 internal sealed record HelperConnection(string Sandbox, int Port, string Token, string Directory);
 internal sealed record AccountLineageSnapshot(string Id, int Port, string Character, string Label,
     double? Percentile, string[] Samples, string Error);
+internal sealed record AccountLineageReport(string Id, int Port, string Name, string Character, string Label,
+    double? Percentile, string[] Samples, string Error, JsonNode? Report);
+internal sealed record AuctionItemRow(string Uid, string Key, string Name, string NameEn, string Kind, string Rarity,
+    bool Ancient, bool BlackMist, int ItemLevel, string Where, int Page, int Index, int Count);
+internal sealed record AuctionAccountInventory(string Id, int Port, string Name, string Character, string Area, string Mode,
+    string Error, AuctionItemRow[] Items);
+internal sealed record AuctionInventoryResult(bool Supported, string Reason, AuctionAccountInventory[] Accounts);
 
 internal sealed class AccountWorkspace : IDisposable
 {
@@ -37,6 +45,8 @@ internal sealed class AccountWorkspace : IDisposable
     private readonly List<AccountProfile> _profiles;
     private readonly Dictionary<string, DateTime> _launches = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, (DateTime Expires, AccountLineageSnapshot Value)> _lineageCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, (DateTime Expires, AccountLineageReport Value)> _lineageReportCache = new(StringComparer.OrdinalIgnoreCase);
+    private (DateTime At, AuctionInventoryResult Value)? _auctionCache;
     private SandboxRuntime? _sandbox;
     private WorkspaceAccount[] _accounts = [];
     private JsonArray _installs = [];
@@ -325,16 +335,23 @@ internal sealed class AccountWorkspace : IDisposable
 
     internal async Task<AccountLineageSnapshot[]> ReadLineageSummariesAsync()
     {
-        WorkspaceAccount[] accounts = await RefreshAsync();
-        return await Task.WhenAll(accounts.Select(ReadLineageSummaryAsync));
+        AccountLineageReport[] reports = await ReadLineageReportsAsync();
+        return reports.Select(report => new AccountLineageSnapshot(report.Id, report.Port, report.Character,
+            report.Label, report.Percentile, report.Samples, report.Error)).ToArray();
     }
 
-    private async Task<AccountLineageSnapshot> ReadLineageSummaryAsync(WorkspaceAccount account)
+    internal async Task<AccountLineageReport[]> ReadLineageReportsAsync()
     {
-        if (_lineageCache.TryGetValue(account.Id, out var cached) && cached.Expires > DateTime.UtcNow)
+        WorkspaceAccount[] accounts = await RefreshAsync();
+        return await Task.WhenAll(accounts.Select(ReadLineageReportAsync));
+    }
+
+    private async Task<AccountLineageReport> ReadLineageReportAsync(WorkspaceAccount account)
+    {
+        if (_lineageReportCache.TryGetValue(account.Id, out var cached) && cached.Expires > DateTime.UtcNow)
             return cached.Value;
 
-        AccountLineageSnapshot result;
+        AccountLineageReport result;
         try
         {
             if (!account.HelperRunning || account.ControlPort == 0)
@@ -350,54 +367,228 @@ internal sealed class AccountWorkspace : IDisposable
             request.Headers.Add("Origin", "https://x1x.tw");
             using HttpResponseMessage response = await _http.SendAsync(request);
             response.EnsureSuccessStatusCode();
-            using JsonDocument document = JsonDocument.Parse(await response.Content.ReadAsByteArrayAsync());
-            JsonElement root = document.RootElement;
-            string character = ReadString(root, "char");
+            JsonNode? report = JsonNode.Parse(await response.Content.ReadAsStringAsync());
+            string character = report?["char"]?.GetValue<string>() ?? "";
             if (character.Length == 0)
             {
-                result = new AccountLineageSnapshot(account.Id, account.ControlPort, "", "等待角色", null, [],
-                    ReadString(root, "error"));
+                result = new AccountLineageReport(account.Id, account.ControlPort, account.Name, "", "等待角色", null, [],
+                    report?["error"]?.GetValue<string>() ?? "", report);
             }
             else
             {
-                JsonElement verdict = root.TryGetProperty("verdict", out JsonElement v) && v.ValueKind == JsonValueKind.Object
-                    ? v : default;
-                string label = verdict.ValueKind == JsonValueKind.Object ? ReadString(verdict, "label") : "";
-                double? percentile = verdict.ValueKind == JsonValueKind.Object
-                    && verdict.TryGetProperty("pct", out JsonElement pct) && pct.TryGetDouble(out double value)
-                    ? value : null;
+                JsonObject? verdict = report?["verdict"] as JsonObject;
+                string label = verdict?["label"]?.GetValue<string>() ?? "";
+                double? percentile = verdict?["pct"] is JsonValue pctValue && pctValue.TryGetValue<double>(out double pct)
+                    ? pct : null;
                 var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                if (verdict.ValueKind == JsonValueKind.Object && verdict.TryGetProperty("used", out JsonElement usedItems)
-                    && usedItems.ValueKind == JsonValueKind.Array)
-                    foreach (JsonElement item in usedItems.EnumerateArray())
-                        if (item.ValueKind == JsonValueKind.String && item.GetString() is { Length: > 0 } key)
+                if (verdict?["used"] is JsonArray usedItems)
+                    foreach (JsonNode? item in usedItems)
+                        if (item is JsonValue value && value.TryGetValue<string>(out string? key) && !string.IsNullOrEmpty(key))
                             used.Add(key);
 
                 var samples = new List<string>();
-                if (root.TryGetProperty("families", out JsonElement families) && families.ValueKind == JsonValueKind.Object)
-                foreach (JsonProperty family in families.EnumerateObject())
+                if (report?["families"] is JsonObject families)
+                foreach (KeyValuePair<string, JsonNode?> family in families)
                 {
-                    if (!used.Contains(family.Name) || family.Value.ValueKind != JsonValueKind.Object
-                        || !family.Value.TryGetProperty("n", out JsonElement count) || !count.TryGetInt32(out int n) || n <= 0)
-                        continue;
-                    samples.Add($"{FamilyName(family.Name)} {n}");
+                    if (!used.Contains(family.Key) || family.Value is not JsonObject detail) continue;
+                    int n = Int(detail["n"]);
+                    if (n > 0) samples.Add($"{FamilyName(family.Key)} {n}");
                 }
 
-                result = new AccountLineageSnapshot(account.Id, account.ControlPort, character,
-                    label.Length > 0 ? label : "样本不足", percentile, samples.ToArray(), "");
+                result = new AccountLineageReport(account.Id, account.ControlPort, account.Name, character,
+                    label.Length > 0 ? label : "样本不足", percentile, samples.ToArray(), "", report);
             }
         }
         catch (Exception ex)
         {
-            string message = ex is HttpRequestException or TaskCanceledException
-                ? "读取超时"
-                : ex.Message;
-            result = new AccountLineageSnapshot(account.Id, account.ControlPort, "", "暂不可用", null, [], message);
+            string message = ex is HttpRequestException or TaskCanceledException ? "读取超时" : ex.Message;
+            result = new AccountLineageReport(account.Id, account.ControlPort, account.Name, "", "暂不可用", null, [], message, null);
         }
 
-        _lineageCache[account.Id] = (DateTime.UtcNow.AddSeconds(45), result);
+        _lineageReportCache[account.Id] = (DateTime.UtcNow.AddSeconds(45), result);
         return result;
     }
+
+    internal async Task<AuctionInventoryResult> ReadAuctionInventoryAsync()
+    {
+        if (_auctionCache is { } cached && DateTime.UtcNow - cached.At < TimeSpan.FromSeconds(20))
+            return cached.Value;
+        WorkspaceAccount[] accounts = await RefreshAsync();
+        var rows = new List<AuctionAccountInventory>();
+        bool supported = false;
+        string reason = "助手未提供拍卖行接口";
+        foreach (WorkspaceAccount account in accounts)
+        {
+            AuctionAccountInventory row = await ReadAuctionAccountAsync(account, feature =>
+            {
+                if (feature) supported = true;
+            });
+            rows.Add(row);
+        }
+        if (!supported)
+            reason = "当前 X1X 助手没有拍卖行操作接口，客户端无法代替游戏完成上架。";
+        var result = new AuctionInventoryResult(supported, reason, rows.ToArray());
+        _auctionCache = (DateTime.UtcNow, result);
+        return result;
+    }
+
+    private async Task<AuctionAccountInventory> ReadAuctionAccountAsync(WorkspaceAccount account, Action<bool> onFeature)
+    {
+        try
+        {
+            if (!account.HelperRunning || account.ControlPort == 0)
+                throw new InvalidOperationException("助手未运行");
+            HelperConnection connection = await ConnectAsync(account.Id);
+            if (!IsConnectionOwner(connection, connection.Port))
+                throw new InvalidOperationException("助手端口已变化，请刷新环境状态");
+
+            using var statusRequest = new HttpRequestMessage(HttpMethod.Get,
+                $"http://127.0.0.1:{connection.Port}/control/status");
+            statusRequest.Headers.Add("X-Deskrawl-Token", connection.Token);
+            statusRequest.Headers.Add("Origin", "https://x1x.tw");
+            using HttpResponseMessage statusResponse = await _http.SendAsync(statusRequest);
+            statusResponse.EnsureSuccessStatusCode();
+            JsonNode? status = JsonNode.Parse(await statusResponse.Content.ReadAsStringAsync());
+            if (status?["features"] is JsonArray features)
+                onFeature(features.Any(node => string.Equals(node?.GetValue<string>(), "auction", StringComparison.OrdinalIgnoreCase)));
+            int apiPort = Int(status?["api"]?["port"]);
+            if (apiPort == 0) apiPort = connection.Port - 1;
+
+            using var stateRequest = new HttpRequestMessage(HttpMethod.Get, $"http://127.0.0.1:{apiPort}/v1/state");
+            stateRequest.Headers.Add("X-Deskrawl-Token", connection.Token);
+            stateRequest.Headers.Add("Origin", "https://x1x.tw");
+            using HttpResponseMessage stateResponse = await _http.SendAsync(stateRequest);
+            stateResponse.EnsureSuccessStatusCode();
+            JsonNode? state = JsonNode.Parse(await stateResponse.Content.ReadAsStringAsync());
+            JsonNode? character = state?["character"];
+            var itemNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                using var namesRequest = new HttpRequestMessage(HttpMethod.Get,
+                    $"http://127.0.0.1:{connection.Port}/control/gear_names");
+                namesRequest.Headers.Add("X-Deskrawl-Token", connection.Token);
+                namesRequest.Headers.Add("Origin", "https://x1x.tw");
+                using HttpResponseMessage namesResponse = await _http.SendAsync(namesRequest);
+                if (namesResponse.IsSuccessStatusCode)
+                {
+                    JsonNode? catalog = JsonNode.Parse(await namesResponse.Content.ReadAsStringAsync());
+                    if (catalog?["items"] is JsonObject entries)
+                        foreach (KeyValuePair<string, JsonNode?> entry in entries)
+                        {
+                            if (entry.Value?["names"] is not JsonObject names) continue;
+                            string localized = Text(names["zh-CN"]);
+                            if (localized.Length == 0) localized = Text(names["zh-TW"]);
+                            if (localized.Length > 0) itemNames[entry.Key] = localized;
+                        }
+                }
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException) { }
+            try
+            {
+                using var textRequest = new HttpRequestMessage(HttpMethod.Get,
+                    $"http://127.0.0.1:{connection.Port}/i18n.json");
+                textRequest.Headers.Add("X-Deskrawl-Token", connection.Token);
+                textRequest.Headers.Add("Origin", "https://x1x.tw");
+                using HttpResponseMessage textResponse = await _http.SendAsync(textRequest);
+                if (textResponse.IsSuccessStatusCode)
+                {
+                    JsonNode? text = JsonNode.Parse(await textResponse.Content.ReadAsStringAsync());
+                    JsonObject? zh = text?["zh-CN"] as JsonObject ?? text?["zh-TW"] as JsonObject;
+                    if (zh is not null)
+                        foreach (KeyValuePair<string, JsonNode?> entry in zh)
+                        {
+                            if (!entry.Key.StartsWith("Rein_", StringComparison.OrdinalIgnoreCase)) continue;
+                            string localized = Simplified(Text(entry.Value));
+                            if (localized.Length > 0) itemNames[entry.Key] = localized;
+                        }
+                }
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException) { }
+            var items = new List<AuctionItemRow>();
+            if (state?["inventory"]?["items"] is JsonArray bag) AddAuctionItems(items, bag, "背包", 0, itemNames);
+            if (state?["storage"]?["pages"] is JsonArray pages)
+                foreach (JsonNode? page in pages)
+                    if (page?["items"] is JsonArray stored)
+                        AddAuctionItems(items, stored, "仓库", Int(page["page"]), itemNames);
+            return new AuctionAccountInventory(account.Id, account.ControlPort, account.Name,
+                character?["name"]?.GetValue<string>() ?? "", character?["area"]?.GetValue<string>() ?? "",
+                character?["mode"]?.GetValue<string>() ?? "", "",
+                items.OrderByDescending(item => item.Rarity == "Divine").ThenByDescending(item => item.BlackMist)
+                    .ThenByDescending(item => item.Ancient).ThenByDescending(item => item.ItemLevel).ToArray());
+        }
+        catch (Exception ex)
+        {
+            string message = ex is HttpRequestException or TaskCanceledException ? "读取超时" : ex.Message;
+            return new AuctionAccountInventory(account.Id, account.ControlPort, account.Name, "", "", "", message, []);
+        }
+    }
+
+    private static void AddAuctionItems(List<AuctionItemRow> rows, JsonArray items, string where, int page,
+        Dictionary<string, string> names)
+    {
+        foreach (JsonNode? item in items)
+        {
+            if (item is not JsonObject record || !IsAuctionEligible(record)) continue;
+            int index = Int(record["location"]?["index"]);
+            string key = Text(record["key"]);
+            string name = names.TryGetValue(key, out string? localized) ? localized : Text(record["name"]);
+            if (name.Length == 0) name = key;
+            rows.Add(new AuctionItemRow(
+                Text(record["uid"]), key, name, Text(record["name"]),
+                Text(record["type"]), Text(record["rarity"]), Bool(record["ancient"]), Bool(record["black_mist"]),
+                Int(record["item_level"]), where, page, index, Math.Max(1, Int(record["count"]))));
+        }
+    }
+
+    private static bool IsAuctionEligible(JsonObject item)
+    {
+        if (Text(item["uid"]).Length == 0 || Bool(item["locked"])) return false;
+        string type = Text(item["type"]);
+        if (type is not ("Equipment" or "Consumable" or "Rune")) return false;
+        if (Int(item["upgrade_level"]) > 0 || Int(item["sockets_used"]) > 0) return false;
+        if (item["flags"] is JsonArray flags
+            && flags.Any(node => string.Equals(node?.GetValue<string>(), "UNMINTED", StringComparison.OrdinalIgnoreCase)))
+            return false;
+        if (item["minted"] is JsonValue minted && minted.TryGetValue<bool>(out bool isMinted) && !isMinted) return false;
+        string rarity = Text(item["rarity"]);
+        string key = Text(item["key"]);
+        // The game's Auction House takes Divine and Rune Set gear, Black Mist pieces, legendary runes
+        // and reins only - an ordinary Legendary piece cannot be listed.
+        return Bool(item["black_mist"])
+            || rarity is "Divine" or "RuneSet"
+            || (type == "Rune" && rarity == "Legendary")
+            || (type == "Consumable" && rarity == "Legendary" && key.StartsWith("Rein_", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string Text(JsonNode? node) =>
+        node is JsonValue value && value.TryGetValue<string>(out string? text) ? text ?? "" : "";
+
+    private const uint LcMapSimplifiedChinese = 0x02000000;
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    private static extern int LCMapStringW(int locale, uint flags, string source, int sourceLength,
+        [Out] char[] destination, int destinationLength);
+
+    private static string Simplified(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return "";
+        try
+        {
+            var buffer = new char[text.Length];
+            int length = LCMapStringW(0x0804, LcMapSimplifiedChinese, text, text.Length, buffer, buffer.Length);
+            return length > 0 ? new string(buffer, 0, Math.Min(length, buffer.Length)) : text;
+        }
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)
+        {
+            return text;
+        }
+    }
+
+    private static int Int(JsonNode? node) =>
+        node is JsonValue value && value.TryGetValue<int>(out int number) ? number : 0;
+
+    private static bool Bool(JsonNode? node) =>
+        node is JsonValue value && value.TryGetValue<bool>(out bool flag) && flag;
 
     private static string FamilyName(string key) => key switch
     {

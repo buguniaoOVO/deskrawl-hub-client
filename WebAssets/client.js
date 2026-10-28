@@ -3,19 +3,23 @@
 
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
-  const APP_VERSION = '1.1';
+  const APP_VERSION = '1.2';
   const state = {
     view: 'overview', overview: null, steam: null, config: null,
     gameWindows: {}, timer: 0, busy: new Set(), lastError: '',
     workspaces: [], workspaceError: '', overviewLoading: false, workspaceLoading: null,
     lineage: {}, lineageLoading: null, lineageError: '',
+    lineageReports: {}, lineageReportLoading: null, lineageReportError: '',
+    auction: null, auctionLoading: null,
+    auctionSettings: { enabled: false, intervalMinutes: 60, lastRunUtc: 0 },
     updateSettings: { repositoryUrl: '', enabled: true, ignoredVersion: '', lastCheckedUtc: 0 },
     updateStatus: { kind: 'waiting', message: 'GitHub 地址待配置。' },
     globalFrameCap: { enabled: false, fps: 10 }, frameCapStatuses: {},
     wikiEquipment: { byId: new Map(), byEnglish: new Map(), byChinese: new Map(), count: 0 },
   };
   const viewNames = {
-    overview: '账号状态', loot: '掉落记录', helpers: '助手设置', settings: '运行设置',
+    overview: '账号状态', loot: '掉落记录', lineage: '血脉鉴定', auction: '拍卖助手',
+    helpers: '助手设置', settings: '运行设置',
   };
   const api = async (path, options = {}) => {
     let response;
@@ -239,6 +243,8 @@
     $('#page-title').textContent = viewNames[view];
     renderCurrent();
     if (view === 'loot') loadSteam();
+    if (view === 'lineage') loadLineageReports();
+    if (view === 'auction') loadAuctionInventory();
     if (view === 'settings') loadSettings();
     if (view === 'helpers') loadWorkspaces().then(renderHelpers);
   }
@@ -254,6 +260,8 @@
   function renderCurrent() {
     if (state.view === 'overview') renderOverview();
     else if (state.view === 'loot') renderLoot();
+    else if (state.view === 'lineage') renderLineage();
+    else if (state.view === 'auction') renderAuction();
     else if (state.view === 'helpers') renderHelpers();
     else if (state.view === 'settings') renderSettings();
   }
@@ -393,7 +401,7 @@
         <div class="data-cell"><div class="data-label">炼狱头骨</div><div class="data-value">${inferno == null ? '—' : number(inferno)}</div></div>
         <div class="data-cell"><div class="data-label">皇家钥匙</div><div class="data-value">${keyCount == null ? '—' : number(keyCount)}</div></div>
         <div class="data-cell"><div class="data-label">掉落记录</div><div class="data-value">${number(account.steam?.found)} 件</div></div>
-        <div class="data-cell lineage-cell"><div class="data-label">血脉评定</div><div class="data-value ${lineage?.error ? 'wait' : ''}" title="${esc(lineageNote)}">${esc(lineageValue)}</div><div class="data-note">${esc(lineageNote)}</div></div>
+        <div class="data-cell"><div class="data-label">血脉鉴定</div><div class="data-value ${lineage?.error ? 'wait' : ''}" title="${esc(lineageNote)}">${esc(lineageValue)}</div><div class="data-note"><button class="link-button" data-act="open-lineage" ${workspaceAttr}>查看鉴定</button></div></div>
       </div><div class="recent-loot"><strong>最近记录</strong>${lootText}</div>
       <div class="account-actions">
         ${button(running ? 'auto-off' : 'auto-on', running ? '停止自动' : '开启自动', running ? 'danger compact' : 'soft compact', `data-port="${port}"`, running ? 'stop' : 'play')}
@@ -471,6 +479,157 @@
         <td>${esc(sourceName(row.src))}${row.how ? ` · ${esc(row.how === 'auto' ? '自动' : '手动')}` : ''}</td>
         <td>${esc([row.map_name, row.boss].filter(Boolean).join(' / ') || '—')}</td></tr>`;
     }).join('') : `<tr><td colspan="7" class="muted-cell">没有符合条件的记录。</td></tr>`;
+  }
+
+  async function loadLineageReports(force = false) {
+    if (state.lineageReportLoading) return state.lineageReportLoading;
+    state.lineageReportLoading = hostRequest('lineage-report').then((rows) => {
+      state.lineageReports = Object.fromEntries((Array.isArray(rows) ? rows : []).map((row) => [row.id, row]));
+      state.lineageReportError = '';
+    }).catch((error) => { state.lineageReportError = error.message; })
+      .finally(() => {
+        state.lineageReportLoading = null;
+        if (state.view === 'lineage') renderLineage();
+      });
+    return state.lineageReportLoading;
+  }
+
+  const rarityLabel = (value) => ({
+    Common: '普通', Uncommon: '优秀', Rare: '稀有', Legendary: '传奇', Divine: '神圣', RuneSet: '符文套装',
+  })[String(value || '')] || String(value || '未分类');
+
+  const percent = (value) => value == null || Number.isNaN(Number(value)) ? '—' : `${Number(value).toFixed(1)}%`;
+
+  function renderLineage() {
+    const reports = managedInstances().map((account) => {
+      const workspace = account.workspace;
+      const report = workspace ? state.lineageReports[workspace.id] : null;
+      return { account, workspace, report };
+    });
+    const loaded = reports.filter((row) => row.report?.report).length;
+    const verdicts = reports.filter((row) => row.report?.percentile != null);
+    const average = verdicts.length
+      ? verdicts.reduce((sum, row) => sum + Number(row.report.percentile), 0) / verdicts.length : null;
+    const draws = reports.reduce((sum, row) => sum + Number(row.report?.report?.gamble?.all?.draws || 0), 0);
+    const ancient = reports.reduce((sum, row) => sum + Number(row.report?.report?.drops?.ancient?.k || 0), 0);
+    $('#page-root').innerHTML = `${intro('BLOODLINE / LUCK VERDICT', '血脉鉴定', '汇总各账号的赌博、远古与黑雾运气，按助手统计口径计算百分位。',
+      button('lineage-refresh', '刷新鉴定', '', '', 'refresh'))}
+      <section class="metrics">
+        ${metric('已鉴定账号', `${number(verdicts.length)}<small>/${number(reports.length)} 个环境</small>`, loaded ? '助手已返回鉴定结果' : '正在读取助手记录', 'accent', 'lineage')}
+        ${metric('平均百分位', `${average == null ? '—' : average.toFixed(1)}<small>%</small>`, '仅统计已有结论的账号', 'copper', 'spark')}
+        ${metric('赌博次数', `${number(draws)}<small>次</small>`, '各账号累计抽取', '', 'box')}
+        ${metric('远古掉落', `${number(ancient)}<small>件</small>`, '有样本的传奇装备', '', 'loot')}
+      </section>
+      ${state.lineageReportError ? `<div class="offline-copy">血脉记录读取失败：${esc(state.lineageReportError)}</div>` : ''}
+      <section class="lineage-grid">${reports.map((row) => renderLineageCard(row)).join('')}</section>`;
+  }
+
+  function renderLineageCard({ account, workspace, report }) {
+    const data = report?.report;
+    const name = report?.name || workspace?.name || account.label || `端口 ${account.port}`;
+    const character = data?.char || report?.character || '';
+    const label = lineageLabel(report?.label || data?.verdict?.label);
+    const percentile = report?.percentile ?? data?.verdict?.pct;
+    const error = report?.error || (!workspace ? '此账号未配置环境。' : '');
+    if (!data) {
+      return `<article class="panel lineage-card"><div class="lineage-head"><div><h3>${esc(name)}</h3><div class="lineage-sub">${esc(character || '等待角色数据')}</div></div><span class="state-pill ${error ? 'wait' : ''}">${esc(error || '读取中')}</span></div>
+        <p class="lineage-empty">${esc(error || '正在读取该账号的血脉记录…')}</p></article>`;
+    }
+    const families = data.families || {};
+    const familyList = [['gamble', '赌博出货'], ['ancient', '远古装备'], ['black_mist', '黑雾装备']]
+      .map(([key, title]) => {
+        const family = families[key] || {};
+        return `<div class="luck-cell"><div class="luck-label">${title}</div><div class="luck-value">${percent(family.pct)}</div>
+          <div class="luck-note">${number(family.k)} / 期望 ${Number(family.expected || 0).toFixed(2)}</div></div>`;
+      }).join('');
+    const rarities = (data.gamble?.all?.rarities || []).map((row) => `<tr><td><span class="rarity-tag ${String(row.rarity || '').toLowerCase()}">${esc(rarityLabel(row.rarity))}</span></td>
+      <td>${number(row.k)}</td><td>${(Number(row.p || 0) * 100).toFixed(2)}%</td><td>${(Number(row.k || 0) * 100 / Math.max(1, Number(data.gamble?.all?.draws || 1))).toFixed(2)}%</td></tr>`).join('');
+    const market = data.market_luck?.kinds || {};
+    const marketRows = Object.entries(market).map(([key, value]) => `<tr><td>${esc(marketKindLabel(key))}</td><td>${number(value.k)}</td><td>${Number(value.expected || 0).toFixed(2)}</td></tr>`).join('');
+    const finds = (data.finds || []).slice(0, 8).map((item) => `<li><span class="${rarityClass(item) ? `rarity-${rarityClass(item)}` : ''}">${esc(displayItemName(item))}</span><span class="muted">${esc(rarityLabel(item.rarity))}${item.ancient ? ' · 远古' : ''}${item.black_mist ? ' · 黑雾' : ''}</span></li>`).join('');
+    const drawsList = (data.draws || []).slice(0, 8).map((item) => `<li><span class="${rarityClass(item) ? `rarity-${rarityClass(item)}` : ''}">${esc(displayItemName(item))}</span><span class="muted">${esc(when(item.t, true))}</span></li>`).join('');
+    return `<article class="panel lineage-card">
+      <div class="lineage-head"><div><h3>${esc(name)}</h3><div class="lineage-sub">${esc(character || '等待角色')} · ${esc(sandboxName(account.sandbox))}</div></div>
+        <span class="state-pill ${error ? 'wait' : 'active'}">${esc(label)}${percentile == null ? '' : ` · ${percent(percentile)}`}</span></div>
+      <div class="luck-meter"><div class="luck-meter-fill" style="width:${Math.max(2, Math.min(100, Number(percentile) || 0))}%"></div></div>
+      <div class="luck-grid">${familyList}</div>
+      <div class="lineage-meta"><span>累计赌博 ${number(data.gamble?.all?.draws)} 次</span><span>出货 ${number(families.gamble?.k)} 件</span><span>远古 ${number(families.ancient?.k)} 件</span><span>黑雾 ${number(families.black_mist?.k)} 件</span><span>魔法发现 ${data.mf == null ? '—' : Number(data.mf).toFixed(2)}</span></div>
+      <details class="lineage-details"><summary>品质分布与市场运气</summary>
+        <div class="lineage-columns"><div><h4>赌博品质</h4><div class="data-table-wrap"><table class="data-table compact"><thead><tr><th>品质</th><th>数量</th><th>概率</th><th>占比</th></tr></thead><tbody>${rarities || '<tr><td colspan="4" class="muted-cell">暂无记录</td></tr>'}</tbody></table></div></div>
+        <div><h4>可交易珍品</h4><div class="data-table-wrap"><table class="data-table compact"><thead><tr><th>类别</th><th>实得</th><th>期望</th></tr></thead><tbody>${marketRows || '<tr><td colspan="3" class="muted-cell">暂无记录</td></tr>'}</tbody></table></div></div></div>
+      </details>
+      <details class="lineage-details"><summary>最近珍品与赌博记录</summary><div class="lineage-columns">
+        <div><h4>珍品记录</h4><ul class="lineage-list">${finds || '<li class="muted">暂无珍品</li>'}</ul></div>
+        <div><h4>赌博记录</h4><ul class="lineage-list">${drawsList || '<li class="muted">暂无赌博</li>'}</ul></div></div></details>
+    </article>`;
+  }
+
+  const marketKindLabel = (value) => ({
+    black_mist: '黑雾装备', divine: '神圣装备', rune_legendary: '传奇符文', rune_set: '符文套装', reins: '缰绳', gold: '金币',
+  })[String(value || '')] || String(value || '其他');
+
+  function loadAuctionInventory(force = false) {
+    if (state.auctionLoading) return state.auctionLoading;
+    state.auctionLoading = hostRequest('auction-inventory').then((result) => {
+      state.auction = result;
+      if (state.view === 'auction') renderAuction();
+    }).catch((error) => {
+      notify(`拍卖候选读取失败：${error.message}`, 'error');
+    }).finally(() => { state.auctionLoading = null; });
+    return state.auctionLoading;
+  }
+
+  const areaLabel = (value) => ({ Town: '城镇中', Combat: '战斗中', Fishing: '钓鱼中' })[String(value || '')] || (value || '位置未知');
+
+  function renderAuction() {
+    const data = state.auction;
+    if (!data) {
+      $('#page-root').innerHTML = `${intro('AUCTION / SCHEDULED LISTING', '拍卖助手', '巡查拍卖行空位，从仓库取回可交易珍品并上架。')}
+        <div class="loading-card"><span class="loader"></span><span>正在检查助手能力与可交易物品…</span></div>`;
+      return;
+    }
+    const accounts = data.accounts || [];
+    const candidates = accounts.reduce((sum, row) => sum + (row.items?.length || 0), 0);
+    const supported = data.supported === true;
+    const notice = supported ? '' : `<section class="panel unsupported-panel">
+      <div class="unsupported-head">${icon('auction')}<div><h2>自动上架暂不可用</h2><p>当前 X1X 助手与游戏内助手没有提供拍卖行查询、空位读取和上架接口。</p></div></div>
+      <div class="unsupported-body"><p>客户端无法在不模拟点击、不伪造队列的前提下完成「暂停自动流程 → 回城 → 从仓库取出珍品 → 填满上架空位 → 恢复自动」。为避免误操作账号或错误上架，1.2 只做能力检测，不提交任何上架请求。</p>
+      <p>接口开放后，此处会直接启用间隔巡查、仓库取物、上架与自动恢复；现有设置和运行记录会保留。下方候选清单按拍卖行可交易品质筛选，方便你先核对手上的珍品。</p></div></section>`;
+    $('#page-root').innerHTML = `${intro('AUCTION / SCHEDULED LISTING', '拍卖助手', '按设定时间巡查拍卖行，空位存在时从仓库取出可交易珍品补满，期间暂停自动流程。',
+      button('auction-refresh', '重新扫描', '', '', 'refresh'))}
+      <section class="metrics">
+        ${metric('可上架候选', `${number(candidates)}<small>件</small>`, '待游戏内核对可交易标签', 'accent', 'auction')}
+        ${metric('在线账号', `${number(accounts.filter((row) => !row.error).length)}<small>个</small>`, '已读取助手与游戏数据', '', 'overview')}
+        ${metric('自动上架', supported ? '可用' : '待接口', supported ? '助手已提供拍卖行接口' : '当前助手缺少拍卖行接口', supported ? 'copper' : '', 'spark')}
+        ${metric('巡查间隔', '60<small>分钟</small>', '建议值与游戏自动存档错开', '', 'clock')}
+      </section>
+      ${notice}
+      <div class="section-head"><div class="section-head-main"><div class="section-head-titleline"><h2>候选物品</h2><span class="count-tag">${number(candidates)} 件</span></div><p>按品质与物品类型初筛：黑雾装备、神圣装备、符文套装、传奇符文与传奇缰绳；已锁定、已强化、已镶嵌或未铸造的物品不列入。最终能否上架仍以游戏物品提示中的可交易标签为准。</p></div></div>
+      <section class="auction-grid">${accounts.map(renderAuctionAccount).join('') || empty('auction', '没有可用账号', '请先在账号状态启动助手与游戏。')}</section>
+      <details class="panel auction-flow"><summary>自动上架流程（接口就绪后启用）</summary><ol class="flow-list">
+        <li>到达巡查时间后，读取拍卖行已上架数量与剩余空位。</li>
+        <li>空位大于 0 时，向对应助手发送停止全自动请求，并记录此前的运行状态。</li>
+        <li>等待角色回到城镇，读取仓库与背包中的可交易珍品。</li>
+        <li>按品质与物品等级依次取出，放入拍卖行上架槽并确认。</li>
+        <li>上架完成后恢复此前开启的全自动与窗口状态；失败则回滚物品并提示。</li></ol></details>`;
+  }
+
+  function renderAuctionAccount(row) {
+    if (row.error) {
+      return `<article class="panel auction-card"><div class="panel-title"><div><h3>${esc(row.name || `端口 ${row.port}`)}</h3><p>${esc(row.character || '等待角色')}</p></div><span class="state-pill wait">${esc(row.error)}</span></div></article>`;
+    }
+    const items = row.items || [];
+    const rows = items.slice(0, 40).map((item) => `<tr>
+      <td><span class="strong-cell ${rarityClass(item) ? `rarity-${rarityClass(item)}` : ''}">${esc(displayItemName(item))}</span></td>
+      <td><span class="rarity-tag ${rarityClass(item)}">${esc(rarityLabel(item.rarity))}${item.blackMist ? ' · 黑雾' : item.ancient ? ' · 远古' : ''}</span></td>
+      <td>${esc(itemKindName({ kind: item.kind }))}</td><td>${esc(item.where)}${item.page ? ` · 第 ${Number(item.page) + 1} 页` : ''}</td>
+      <td class="mono">${Number(item.itemLevel) || '—'}</td></tr>`).join('');
+    return `<article class="panel auction-card">
+      <div class="panel-title"><div><h3>${esc(row.name || `端口 ${row.port}`)}</h3><p>${esc(row.character || '等待角色')} · ${esc(areaLabel(row.area))}${row.mode === 'Online' ? '' : ' · 离线角色无法交易'}</p></div><span class="state-pill ${items.length && row.mode !== 'Local' ? 'active' : ''}">${number(items.length)} 件候选</span></div>
+      ${row.mode && row.mode !== 'Online' ? '<p class="lineage-empty">此角色为离线角色，拍卖行只接受在线角色交易。</p>' : ''}
+      ${items.length ? `<div class="data-table-wrap"><table class="data-table compact"><thead><tr><th>物品</th><th>品质</th><th>类别</th><th>所在</th><th>物品等级</th></tr></thead><tbody>${rows}</tbody></table></div>
+        ${items.length > 40 ? `<p class="form-hint">仅显示前 40 件，共 ${number(items.length)} 件。</p>` : ''}` : '<p class="lineage-empty">没有符合上架条件的物品。</p>'}
+    </article>`;
   }
 
   function renderWorkspacePanel() {
@@ -700,7 +859,23 @@
       if (action === 'refresh') {
         await loadOverview(true);
         if (state.view === 'loot') await loadSteam();
+        else if (state.view === 'lineage') await loadLineageReports();
+        else if (state.view === 'auction') await loadAuctionInventory();
         else if (state.view === 'settings') await loadSettings();
+        return;
+      }
+      if (action === 'lineage-refresh') {
+        await loadLineageReports(true);
+        notify('血脉鉴定已刷新。');
+        return;
+      }
+      if (action === 'open-lineage') {
+        navigate('lineage');
+        return;
+      }
+      if (action === 'auction-refresh') {
+        await loadAuctionInventory(true);
+        notify(state.auction?.supported ? '拍卖候选已刷新。' : '已刷新候选；当前助手不支持自动上架。');
         return;
       }
       if (action === 'auto-on' || action === 'auto-off') {
@@ -779,6 +954,8 @@
   async function refreshAll(force) {
     await loadOverview(force);
     if (state.view === 'loot') await loadSteam();
+    else if (state.view === 'lineage') await loadLineageReports();
+    else if (state.view === 'auction') await loadAuctionInventory();
   }
 
   async function saveSettings(advanced) {
@@ -1002,6 +1179,8 @@
   state.timer = setInterval(() => {
     if (state.view === 'overview') loadOverview(false);
     else if (state.view === 'loot') loadSteam();
+    else if (state.view === 'lineage') loadLineageReports();
+    else if (state.view === 'auction') loadAuctionInventory();
     else if (state.view === 'helpers') loadWorkspaces().then(renderHelpers);
   }, 7000);
   setInterval(() => checkForUpdates({ force: true, quiet: true }), 12 * 60 * 60 * 1000);

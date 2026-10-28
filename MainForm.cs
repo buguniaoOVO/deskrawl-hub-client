@@ -307,6 +307,12 @@ internal sealed class MainForm : Form
                 case "lineage-list":
                     result = await _workspace.ReadLineageSummariesAsync();
                     break;
+                case "lineage-report":
+                    result = await _workspace.ReadLineageReportsAsync();
+                    break;
+                case "auction-inventory":
+                    result = await _workspace.ReadAuctionInventoryAsync();
+                    break;
                 case "launch-helper":
                 case "launch-game":
                     result = new { message = await _workspace.LaunchAsync(id, action == "launch-helper") };
@@ -522,7 +528,7 @@ internal sealed class MainForm : Form
             AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate | DecompressionMethods.Brotli,
         };
         var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(15) };
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) DeskrawlHubClient/1.1");
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) DeskrawlHubClient/1.2");
         client.DefaultRequestHeaders.AcceptLanguage.ParseAdd("zh-CN,zh;q=0.9");
         return client;
     }

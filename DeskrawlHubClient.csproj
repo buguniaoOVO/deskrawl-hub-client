@@ -8,10 +8,10 @@
     <Nullable>enable</Nullable>
     <AssemblyName>DeskrawlHubClient</AssemblyName>
     <RootNamespace>DeskrawlHubClient</RootNamespace>
-    <Version>1.1</Version>
-    <AssemblyVersion>1.1.0.0</AssemblyVersion>
-    <FileVersion>1.1.0.0</FileVersion>
-    <InformationalVersion>1.1</InformationalVersion>
+    <Version>1.2</Version>
+    <AssemblyVersion>1.2.0.0</AssemblyVersion>
+    <FileVersion>1.2.0.0</FileVersion>
+    <InformationalVersion>1.2</InformationalVersion>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\Deskrawl.ico</ApplicationIcon>
     <PublishSingleFile>true</PublishSingleFile>
