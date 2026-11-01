@@ -7,7 +7,7 @@
   const state = {
     view: 'overview', overview: null, steam: null, config: null,
     gameWindows: {}, timer: 0, busy: new Set(), lastError: '',
-    workspaces: [], workspaceError: '', overviewLoading: false, workspaceLoading: null,
+    workspaces: [], workspaceError: '', overviewLoading: false, workspaceLoading: null, hidden: [], hiddenError: '', hiddenLoading: null,
     lineage: {}, lineageLoading: null, lineageError: '',
     lineageReports: {}, lineageReportLoading: null, lineageReportError: '',
     auction: null, auctionLoading: null,
@@ -54,6 +54,15 @@
     }).catch((error) => { state.workspaceError = error.message; })
       .finally(() => { state.workspaceLoading = null; });
     return state.workspaceLoading;
+  }
+  async function loadHidden(refresh = false) {
+    if (state.hiddenLoading && !refresh) return state.hiddenLoading;
+    state.hiddenLoading = hostRequest('hidden-list').then((rows) => {
+      state.hidden = Array.isArray(rows) ? rows : [];
+      state.hiddenError = '';
+    }).catch((error) => { state.hiddenError = error.message; })
+      .finally(() => { state.hiddenLoading = null; });
+    return state.hiddenLoading;
   }
   function managedInstances() {
     const instances = state.overview?.instances || [];
@@ -109,9 +118,9 @@
     return label && stage && !String(label).includes(stage[1]) ? `${label} · ${stage[1]}` : label || '等待地图数据';
   };
   const sandboxName = (value) => {
-    if (typeof value === 'string') return value.trim() || '沙盒外';
-    if (value && typeof value === 'object') return String(value.sandbox || value.name || value.label || '').trim() || '沙盒外';
-    return '沙盒外';
+    if (typeof value === 'string') return value.trim() || '主机';
+    if (value && typeof value === 'object') return String(value.sandbox || value.name || value.label || '').trim() || '主机';
+    return '主机';
   };
   const normalizeItemName = (value) => String(value || '').normalize('NFKC')
     .replace(/[’‘`]/g, "'").replace(/[‐‑–—]/g, '-')
@@ -246,11 +255,11 @@
     if (view === 'lineage') loadLineageReports();
     if (view === 'auction') loadAuctionInventory();
     if (view === 'settings') loadSettings();
-    if (view === 'helpers') loadWorkspaces().then(renderHelpers);
+    if (view === 'helpers') { loadWorkspaces().then(renderHelpers); loadHidden().then(() => { if (state.view === 'helpers') renderHelpers(); }); }
   }
 
   function intro(kicker, title, description, actions = '') {
-    return `<div class="page-intro"><div><div class="eyebrow">${esc(kicker)}</div><h1>${esc(title)}</h1><p>${esc(description)}</p></div>${actions ? `<div class="intro-actions">${actions}</div>` : ''}</div>`;
+    return `<div class="page-intro"><div class="intro-copy"><h1>${esc(title)}</h1><p>${esc(description)}</p></div>${actions ? `<div class="intro-actions">${actions}</div>` : ''}</div>`;
   }
 
   function button(action, label, tone = '', extra = '', symbol = '') {
@@ -294,7 +303,7 @@
     const setting = state.globalFrameCap || { enabled: false, fps: 10 };
     return `<section class="panel frame-cap-settings-panel">
       <div class="panel-title"><div><h3>全局锁帧</h3><p>账号状态页的开关会统一应用到当前和后续启动的游戏。</p></div><span class="state-pill ${setting.enabled ? 'active' : ''}">${setting.enabled ? `已开启 · ${Number(setting.fps) || 10} 帧` : '已关闭'}</span></div>
-      <div class="form-grid"><div class="form-field"><label for="global-frame-cap-rate">全局帧率上限</label><select class="select" id="global-frame-cap-rate" data-act="global-frame-cap-rate"><option value="10" ${Number(setting.fps) === 30 ? '' : 'selected'}>10 帧</option><option value="30" ${Number(setting.fps) === 30 ? 'selected' : ''}>30 帧</option></select></div><div class="form-field"><span class="form-hint">挡位变更会即时应用；关闭状态下只保存挡位。</span></div></div>
+      <div class="form-grid"><div class="form-field"><label for="global-frame-cap-rate">全局帧率上限</label><select class="select" id="global-frame-cap-rate" data-act="global-frame-cap-rate"><option value="10" ${Number(setting.fps) === 30 ? '' : 'selected'}>10 帧</option><option value="30" ${Number(setting.fps) === 30 ? 'selected' : ''}>30 帧</option></select><p class="form-hint">挡位变更会即时应用；关闭状态下只保存挡位。</p></div></div>
     </section>`;
   }
 
@@ -313,11 +322,14 @@
     const allWindowsHidden = runningGames.length > 0 && runningGames.every((item) => state.gameWindows[String(item.port)] === 'hidden');
     const capEnabled = state.globalFrameCap.enabled === true;
     $('#page-root').innerHTML = `${intro('ACCOUNT STATUS / LIVE VIEW', '账号状态', '管理主机与各沙箱的游戏、助手和独立设置。')}
-      <section class="hero-band">
-        <div class="hero-orbit"></div>
-        <div class="hero-copy"><div class="hero-kicker">LOCAL OPERATIONS / ${esc(new Date().toLocaleDateString('zh-CN'))}</div>
-          <h2>${online ? `${number(online)} 个账号正在连接` : '主机与沙箱启动台'}</h2>
-          <p>${online ? `${number(auto)} 个账号运行全自动，${number(games)} 个游戏进程在线。` : '选择对应环境，可分别启动游戏或 X1X 助手。'}</p>
+      <section class="run-band">
+        <div class="run-band-main">
+          <strong>${online ? `${number(online)} 个账号正在连接` : '主机与沙箱启动台'}</strong>
+          <span>${online ? `${number(auto)} 个账号运行全自动，${number(games)} 个游戏进程在线。` : '选择对应环境，可分别启动游戏或 X1X 助手。'}</span>
+        </div>
+        <div class="run-band-meta">
+          <span>${esc(new Date().toLocaleDateString('zh-CN'))}</span>
+          <span>${data.ports?.length ? `端口 ${data.ports[0]}—${data.ports[data.ports.length - 1]}` : '端口待分配'}</span>
         </div>
       </section>
       <section class="metrics">
@@ -383,13 +395,20 @@
       return `<span class="${cls ? `rarity-${cls}` : ''}">${esc(item.ancient ? '远古 ' : '')}${esc(displayItemName(item))}</span>`;
     }).join('<span class="muted"> · </span>') || '暂无掉落记录';
     const launchWait = account.game?.launch_waiting && !gameOn;
-    const updateLabel = update.state === 'available' ? `更新 ${esc(update.version || '')}` : (update.state === 'latest' ? '已是最新' : '检查更新');
+    const updateBusy = ['checking', 'downloading', 'installing', 'applying', 'updating'].includes(String(update.state || ''));
+    const updateProgress = describeProgress(update.progress);
+    const updateLabel = updateBusy
+      ? (update.state === 'checking' ? '检查中' : `安装中${updateProgress ? ' ' + updateProgress : ''}`)
+      : update.state === 'available' ? `更新 ${esc(update.version || '')}`
+      : update.state === 'latest' ? '已是最新'
+      : update.state === 'error' ? '重试检查' : '检查更新';
     const updateAction = update.state === 'available' ? 'update' : 'check-update';
     return `<article class="account-card ${paired ? '' : 'offline'}" data-port="${port}">
       <div class="account-head">
         <div class="account-avatar">${esc(workspace ? (workspace.sandbox || '主机') : String(port).slice(-3) || '—')}</div>
         <div class="account-title"><div class="account-name-row"><span class="account-name">${esc(account.label || `实例 ${port}`)}</span>
-          <button class="rename-button" data-act="${workspace ? 'workspace-config' : 'rename'}" ${workspaceAttr} data-port="${port}" title="环境设置">${icon('settings')}</button></div>
+          <button class="rename-button" data-act="${workspace ? 'workspace-config' : 'rename'}" ${workspaceAttr} data-port="${port}" title="环境设置">${icon('settings')}</button>
+          ${workspace ? `<button class="rename-button remove-button" data-act="hide-account" ${workspaceAttr} data-port="${port}" title="从账号状态页移除（配置保留，可在助手设置恢复）" aria-label="移除环境">${icon('close')}</button>` : ''}</div>
           <div class="account-meta"><span class="port-pill">${port ? `PORT ${port}` : '待启动'}</span><span>${esc(sandboxName(account.sandbox))}</span>${account.helper?.version ? `<span>助手 ${esc(account.helper.version)}</span>` : ''}</div>
         </div>
         <span class="state-pill ${stateClass}">${esc(launchWait ? '游戏启动中' : stateText)}</span>
@@ -407,7 +426,7 @@
         ${button(running ? 'auto-off' : 'auto-on', running ? '停止自动' : '开启自动', running ? 'danger compact' : 'soft compact', `data-port="${port}"`, running ? 'stop' : 'play')}
         ${button(gameOn ? 'game-close' : (workspace ? 'workspace-launch-game' : 'game-open'), gameOn ? '关闭游戏' : '启动游戏', gameOn ? 'danger compact' : 'compact', `data-port="${port}" ${workspaceAttr}`, 'game')}
         ${button(hidden ? 'window-show' : 'window-hide', hidden ? '显示窗口' : '隐藏窗口', 'compact', `data-port="${port}" ${gameOn ? '' : 'disabled'}`, hidden ? 'eye' : 'eye-off')}
-        ${button(updateAction, updateLabel, update.state === 'available' ? 'copper compact' : 'compact', `data-port="${port}" data-version="${esc(update.version || '')}"`, 'download')}
+        ${button(updateAction, updateLabel, update.state === 'available' ? 'copper compact' : 'compact', `data-port="${port}" data-version="${esc(update.version || '')}" ${updateBusy ? 'disabled' : ''}`, 'download')}
         ${button('host', '部署接口', 'compact', `data-port="${port}"`, 'box')}
       </div>` : `<div class="offline-copy">${esc(workspace?.notice || account.error || '助手当前未连接；游戏与助手可分别启动。')}</div>
       <div class="account-actions">${workspace ? button('workspace-launch-game', gameOn ? '游戏已运行' : '启动游戏', 'soft compact', `${workspaceAttr} ${gameOn ? 'disabled' : ''}`, 'game') : ''}</div>`}
@@ -642,6 +661,25 @@
       ${state.workspaceError ? `<p class="offline-copy">${esc(state.workspaceError)}</p>` : ''}</section>`;
   }
 
+  function renderHiddenPanel() {
+    const rows = state.hidden.map((row) => `<div class="env-row">
+      <div class="env-row-main"><strong>${esc(row.name)}</strong><span class="env-path">${esc(row.helperDirectory || '未选择助手目录')}</span></div>
+      <div class="env-row-actions">
+        <span class="tag ${row.paired ? '' : 'muted'}">${row.paired ? '已配对' : '未配对'}</span>
+        ${button('unhide-account', '加回账号状态', 'soft compact', `data-workspace="${esc(row.id)}"`, 'eye')}
+      </div>
+    </div>`).join('');
+    return `<section class="panel env-panel">
+      <div class="panel-title"><div><h3>环境管理</h3><p>扫描到的沙箱可以移出账号状态页；隐藏只影响显示，配置与配对信息都保留。</p></div><span class="count-tag">${state.hidden.length} 个已隐藏</span></div>
+      <div class="env-add">
+        <input class="field" id="env-new-sandbox" placeholder="Sandboxie 沙盘名，例如 5；留空表示主机">
+        ${button('add-account', '手动添加环境', 'compact', '', 'box')}
+      </div>
+      <div class="env-list">${rows || '<p class="env-empty">没有隐藏的环境。账号卡片右上角的 × 可以把扫描到但不需要的沙箱移出列表。</p>'}</div>
+      ${state.hiddenError ? `<p class="offline-copy">隐藏环境读取失败：${esc(state.hiddenError)}</p>` : ''}
+    </section>`;
+  }
+
   function renderHelpers() {
     if (state.view !== 'helpers') return;
     $('#page-root').innerHTML = `${intro('HELPER SETTINGS / ISOLATED ENVIRONMENTS', '助手设置', '选择主机或沙箱，打开该环境的 X1X 助手页面。各环境使用独立网页存储与配对信息。')}
@@ -657,7 +695,8 @@
           ${button('workspace-launch-game', row.gamePids.length ? '游戏已运行' : '启动游戏', '', `data-workspace="${esc(row.id)}" ${row.gamePids.length ? 'disabled' : ''}`, 'game')}
           ${button('workspace-config', '环境设置', '', `data-workspace="${esc(row.id)}"`, 'box')}
         </div>
-      </article>`).join('') || empty('box', '正在读取环境', '读取主机与 Sandboxie 沙箱列表。')}</section>`;
+      </article>`).join('') || empty('box', '正在读取环境', '读取主机与 Sandboxie 沙箱列表。')}</section>
+      ${renderHiddenPanel()}`;
   }
 
   function showWorkspaceConfig(id) {
@@ -819,6 +858,28 @@
     setBusy(busyKey, true);
     if (buttonNode) buttonNode.disabled = true;
     try {
+      if (action === 'hide-account') {
+        const row = managedInstances().find((item) => item.workspace?.id === workspaceId);
+        const name = row?.label || '该环境';
+        if (!confirm(`从账号状态页移除「${name}」？\n配置与配对信息会保留，可在「助手设置 → 环境管理」里加回来。`)) return;
+        state.workspaces = await hostRequest('hide-account', { id: workspaceId });
+        notify(`已移除「${name}」，可在助手设置恢复。`);
+        await loadHidden(true); renderCurrent();
+        return;
+      }
+      if (action === 'unhide-account') {
+        state.workspaces = await hostRequest('unhide-account', { id: workspaceId });
+        notify('环境已恢复到账号状态页。');
+        await loadHidden(true); renderCurrent();
+        return;
+      }
+      if (action === 'add-account') {
+        const value = ($('#env-new-sandbox')?.value || '').trim();
+        state.workspaces = await hostRequest('add-account', { sandbox: value });
+        notify(value ? `已添加沙盘「${value}」。` : '已添加主机环境。');
+        await loadHidden(true); renderCurrent();
+        return;
+      }
       if (action.startsWith('workspace-')) {
         await runWorkspaceAction(action, workspaceId);
         return;
@@ -897,13 +958,9 @@
         const result = await post('/api/launch', { port });
         notify(result.ok ? (result.result || '助手启动请求已提交') : (result.error || '助手启动失败'), result.ok ? '' : 'error');
       } else if (action === 'check-update') {
-        await post('/api/update', { action: 'check', port });
-        notify(`${port} 号实例的版本检查已提交。`);
+        await checkHelperUpdate(port, buttonNode);
       } else if (action === 'update') {
-        const version = buttonNode?.dataset.version || '';
-        if (!confirm(`将 ${port} 号实例更新到 ${version || '当前可用版本'}？`)) return;
-        const result = await post('/api/update', { action: 'apply', port, version });
-        notify(result.ok ? '更新已提交。' : (result.error || '更新没有开始'), result.ok ? '' : 'error');
+        await runHelperUpdate(port, buttonNode?.dataset.version || '');
       } else if (action === 'host') {
         const result = await post('/api/host', { port });
         notify(result.ok ? '游戏内助手安装已提交。' : (result.error || '安装没有开始'), result.ok ? '' : 'error');
@@ -949,6 +1006,146 @@
     const result = await post('/api/config', { instances });
     notify(result.warning || '账号备注已保存。');
     await refreshAll(true);
+  }
+
+  async function readInstance(port) {
+    const data = await api('/api/overview');
+    state.overview = data;
+    return (data.instances || []).find((item) => Number(item.port) === Number(port));
+  }
+
+  async function waitUntil(check, timeoutMs, message, intervalMs = 1500) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (await check()) return true;
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+    throw new Error(message);
+  }
+
+  function describeProgress(progress) {
+    if (progress == null) return '';
+    if (typeof progress === 'number') {
+      return progress <= 100 ? `${Math.round(progress)}%` : `${(progress / 1048576).toFixed(1)} MB`;
+    }
+    if (typeof progress === 'object') {
+      const done = Number(progress.done ?? progress.received ?? progress.current ?? 0);
+      const total = Number(progress.total ?? progress.size ?? 0);
+      if (total > 0) return `${Math.round((done * 100) / total)}%（${(done / 1048576).toFixed(1)}/${(total / 1048576).toFixed(1)} MB）`;
+      if (done > 0) return `${(done / 1048576).toFixed(1)} MB`;
+      if (progress.text) return String(progress.text);
+    }
+    return String(progress);
+  }
+
+  async function checkHelperUpdate(port, buttonNode) {
+    if (buttonNode) buttonNode.disabled = true;
+    try {
+      await post('/api/update', { action: 'check', port });
+      if (state.view === 'overview') renderOverview();
+      await waitUntil(async () => {
+        const state = (await readInstance(port))?.update?.state;
+        return state && state !== 'checking' && state !== 'waiting';
+      }, 120000, '版本检查超时，请稍后重试。');
+      const update = (await readInstance(port))?.update || {};
+      if (update.error) throw new Error(update.error);
+      notify(update.state === 'available'
+        ? `可以更新到 ${update.version}，点「更新」开始安装。`
+        : `助手已是 ${update.version || '最新版本'}。`, update.state === 'available' ? 'warn' : '');
+      if (state.view === 'overview') renderOverview();
+    } finally {
+      if (buttonNode?.isConnected) buttonNode.disabled = false;
+    }
+  }
+
+  const UPDATE_STEPS = [
+    ['stop', '停止全自动流程'],
+    ['close', '关闭游戏'],
+    ['install', '下载并安装助手'],
+    ['launch', '重新启动游戏'],
+  ];
+
+  function openUpdateDialog(name, version) {
+    const dialog = document.createElement('dialog');
+    dialog.className = 'workspace-dialog update-dialog';
+    dialog.innerHTML = `<div class="panel-title"><div><h3>更新助手 · ${esc(name)}</h3><p>目标版本 ${esc(version || '最新版本')}。安装期间不要手动操作该环境的游戏窗口。</p></div></div>
+      <ol class="update-steps">${UPDATE_STEPS.map(([key, label]) => `<li class="update-step" data-step="${key}" data-state="wait"><span class="step-dot"></span><div><strong>${esc(label)}</strong><span class="step-note">等待开始</span></div></li>`).join('')}</ol>
+      <div class="update-result" hidden></div>
+      <div class="form-actions"><button class="btn primary" type="button" id="update-dialog-close" disabled>关闭</button></div>`;
+    dialog.addEventListener('close', () => dialog.remove());
+    document.body.appendChild(dialog);
+    dialog.showModal();
+    const step = (key, stateName, note) => {
+      const node = dialog.querySelector(`.update-step[data-step="${key}"]`);
+      if (!node) return;
+      node.dataset.state = stateName;
+      const noteNode = node.querySelector('.step-note');
+      if (noteNode) noteNode.textContent = note || '';
+    };
+    const finish = (ok, message) => {
+      dialog.querySelectorAll('.update-step[data-state="run"]').forEach((node) => { node.dataset.state = ok ? 'done' : 'error'; });
+      const result = dialog.querySelector('.update-result');
+      result.hidden = false;
+      result.className = `update-result ${ok ? 'ok' : 'fail'}`;
+      result.textContent = message;
+      const closeButton = dialog.querySelector('#update-dialog-close');
+      closeButton.disabled = false;
+      closeButton.addEventListener('click', () => dialog.close());
+    };
+    return { dialog, step, finish };
+  }
+
+  async function runHelperUpdate(port, version) {
+    const account = managedInstances().find((row) => Number(row.port) === Number(port));
+    if (!account) throw new Error('实例信息已变化，请刷新后重试。');
+    const name = account.label || `端口 ${port}`;
+    if (!confirm(`更新「${name}」的助手到 ${version || '最新版本'}？\n\n会自动停止全自动、关闭游戏、安装助手，装完后再把游戏启动回来。`)) return;
+    const ui = openUpdateDialog(name, version);
+    const hadGame = account.game?.running === true;
+    try {
+      if (account.loop?.running) {
+        ui.step('stop', 'run', '正在提交停止请求…');
+        await post('/api/action', { port, path: '/control/loop', action: 'stop' });
+        await waitUntil(async () => !(await readInstance(port))?.loop?.running, 45000, '自动流程没有停下来，请手动停止后重试。');
+        ui.step('stop', 'done', '已停止。');
+      } else ui.step('stop', 'skip', '未在运行，跳过。');
+
+      if (hadGame) {
+        ui.step('close', 'run', '正在关闭游戏…');
+        await post('/api/game', { port, action: 'close' });
+        await waitUntil(async () => !(await readInstance(port))?.game?.running, 90000, '游戏进程没有在 90 秒内退出，请手动关闭后重试。');
+        ui.step('close', 'done', '游戏已退出。');
+      } else ui.step('close', 'skip', '游戏未运行，跳过。');
+
+      ui.step('install', 'run', '正在提交安装请求…');
+      const apply = await post('/api/update', { action: 'apply', port, version });
+      if (apply.ok === false) throw new Error(apply.error || '安装请求被拒绝。');
+      const deadline = Date.now() + 20 * 60 * 1000;
+      let update = {};
+      while (Date.now() < deadline) {
+        update = (await readInstance(port))?.update || {};
+        if (update.error || update.blocked) throw new Error(update.error || update.blocked);
+        const progress = describeProgress(update.progress);
+        if (update.state === 'latest' && !progress) break;
+        ui.step('install', 'run', progress ? `正在安装…${progress}` : `状态：${update.label || update.state || '安装中'}`);
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+      }
+      if (update.state !== 'latest') throw new Error('安装等待超时，到助手设置里核对一下版本。');
+      ui.step('install', 'done', `已安装 ${update.version || version || '最新版本'}。`);
+
+      if (hadGame) {
+        ui.step('launch', 'run', '正在重新启动游戏…');
+        await post('/api/game', { port, action: 'launch' });
+        ui.step('launch', 'done', '启动请求已提交。');
+      } else ui.step('launch', 'skip', '游戏此前未运行，保持关闭。');
+
+      ui.finish(true, `「${name}」的助手已更新完成。`);
+      notify(`${name} 助手已更新。`);
+      await loadOverview(true);
+    } catch (error) {
+      ui.finish(false, `更新中断：${error.message || '未知错误'}`);
+      notify(`更新中断：${error.message}`, 'error');
+    }
   }
 
   async function refreshAll(force) {
@@ -1161,6 +1358,17 @@
   document.addEventListener('keydown', (event) => {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'r') {
       event.preventDefault(); runAction('refresh');
+      return;
+    }
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    const target = event.target;
+    if (target instanceof HTMLElement && target.closest('input, textarea, select, [contenteditable="true"]')) return;
+    // 侧栏的 01–06 是可用快捷键，不是装饰。
+    const index = Number(event.key) - 1;
+    const views = Object.keys(viewNames);
+    if (index >= 0 && index < views.length) {
+      event.preventDefault();
+      navigate(views[index]);
     }
   });
   $('#refresh-button').addEventListener('click', () => runAction('refresh'));

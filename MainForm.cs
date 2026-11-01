@@ -322,6 +322,17 @@ internal sealed class MainForm : Form
                         request.GetProperty("gameExecutable").GetString() ?? "", request.GetProperty("gameLaunchMode").GetString() ?? "steam");
                     result = await _workspace.RefreshAsync(true);
                     break;
+                case "hide-account":
+                case "unhide-account":
+                    result = await _workspace.SetHiddenAsync(id, action == "hide-account");
+                    break;
+                case "hidden-list":
+                    result = await _workspace.ListHiddenAsync();
+                    break;
+                case "add-account":
+                    result = await _workspace.AddAccountAsync(
+                        request.TryGetProperty("sandbox", out var sandboxValue) ? sandboxValue.GetString() ?? "" : "");
+                    break;
                 case "browse-helper":
                     using (var dialog = new FolderBrowserDialog { Description = "选择此环境的 X1X 助手目录", UseDescriptionForTitle = true })
                         result = new { path = dialog.ShowDialog(this) == DialogResult.OK ? dialog.SelectedPath : "" };

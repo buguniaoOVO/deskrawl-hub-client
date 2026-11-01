@@ -18,7 +18,11 @@ internal sealed record AccountProfile
     public string PairingFingerprint { get; set; } = "";
     public string GameExecutable { get; set; } = "";
     public string GameLaunchMode { get; set; } = "steam";
+    // 隐藏的环境仍保留配置与配对信息，只是不再出现在账号状态页；可在「助手设置」里恢复。
+    public bool Hidden { get; set; }
 }
+
+internal sealed record HiddenAccount(string Id, string Name, string Sandbox, string HelperDirectory, bool Paired);
 
 internal sealed record WorkspaceAccount(string Id, string Name, string Sandbox, string HelperDirectory,
     int ControlPort, bool HelperRunning, int[] GamePids, string GameExecutable, string GameLaunchMode, string Notice);
@@ -128,6 +132,7 @@ internal sealed class AccountWorkspace : IDisposable
         {
             var profile = _profiles.FirstOrDefault(p => p.Sandbox.Equals(box, StringComparison.OrdinalIgnoreCase));
             if (profile is null) { profile = new AccountProfile { Sandbox = box }; _profiles.Add(profile); }
+            if (profile.Hidden) continue;
             var active = helperProcesses.Where(p => p.Box.Equals(box, StringComparison.OrdinalIgnoreCase)).ToArray();
             var activeRoots = active.Select(p => p.Directory).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
             string notice = "";
@@ -257,6 +262,61 @@ internal sealed class AccountWorkspace : IDisposable
             profile.GameExecutable = game;
             profile.GameLaunchMode = mode;
             Save();
+        }
+        finally { _gate.Release(); }
+    }
+
+    internal async Task<WorkspaceAccount[]> SetHiddenAsync(string id, bool hidden)
+    {
+        await _gate.WaitAsync();
+        try
+        {
+            await RefreshCoreAsync(false);
+            var profile = Profile(id);
+            profile.Hidden = hidden;
+            Save();
+            return await RefreshCoreAsync(true);
+        }
+        finally { _gate.Release(); }
+    }
+
+    internal async Task<HiddenAccount[]> ListHiddenAsync()
+    {
+        await _gate.WaitAsync();
+        try
+        {
+            await RefreshCoreAsync(false);
+            return _profiles.Where(p => p.Hidden)
+                .OrderBy(p => p.Sandbox.Length > 0)
+                .ThenBy(p => p.Sandbox, StringComparer.OrdinalIgnoreCase)
+                .Select(p => new HiddenAccount(Id(p.Sandbox), Name(p.Sandbox), p.Sandbox, p.HelperDirectory,
+                    p.PairingFingerprint.Length > 0))
+                .ToArray();
+        }
+        finally { _gate.Release(); }
+    }
+
+    /// <summary>恢复隐藏的环境，或按名称手动加回一个 Sandboxie 沙盘。</summary>
+    internal async Task<WorkspaceAccount[]> AddAccountAsync(string sandbox)
+    {
+        await _gate.WaitAsync();
+        try
+        {
+            await RefreshCoreAsync(false);
+            string box = (sandbox ?? "").Trim();
+            if (box.Equals("主机", StringComparison.OrdinalIgnoreCase) || box.Equals("host", StringComparison.OrdinalIgnoreCase))
+                box = "";
+            if (box.Length > 0 && !_sandbox!.Boxes().Contains(box, StringComparer.OrdinalIgnoreCase))
+                throw new InvalidOperationException($"Sandboxie 里没有名为「{box}」的沙盘，请先在 Sandboxie 中创建。");
+            var profile = _profiles.FirstOrDefault(p => p.Sandbox.Equals(box, StringComparison.OrdinalIgnoreCase));
+            if (profile is null)
+            {
+                profile = new AccountProfile { Sandbox = box };
+                _profiles.Add(profile);
+            }
+            profile.Hidden = false;
+            Save();
+            return await RefreshCoreAsync(true);
         }
         finally { _gate.Release(); }
     }
