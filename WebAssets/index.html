@@ -45,7 +45,7 @@
         <div><div class="brand-name">桌破控制台</div><div class="brand-sub">LOCAL OPERATIONS</div></div>
       </div>
 
-      <div class="nav-label">工作区</div>
+      <div class="nav-label">控制台</div>
       <nav class="nav-list" aria-label="主导航">
         <button class="nav-item active" data-view="overview"><svg><use href="#i-overview"/></svg><span>账号状态</span><kbd>01</kbd></button>
         <button class="nav-item" data-view="loot"><svg><use href="#i-loot"/></svg><span>掉落记录</span><kbd>02</kbd></button>
@@ -64,22 +64,30 @@
 
     <section class="main-area">
       <header class="topbar">
-        <div class="crumb"><span>桌破</span><i>/</i><strong id="page-title">账号状态</strong></div>
+        <div class="page-head">
+          <h1 id="page-title">账号状态</h1>
+          <p id="page-desc">主机与各沙箱的游戏、助手与运行状态</p>
+        </div>
         <div class="topbar-right">
           <div class="live-status"><span class="state-led" id="top-led"></span><span id="top-status">正在读取状态</span></div>
-          <span class="top-divider"></span>
           <span class="top-time" id="top-time">--:--:--</span>
-          <button class="icon-button sponsor-button" data-act="sponsor" title="赞助作者" aria-label="赞助作者"><svg><use href="#i-heart"/></svg><span>赞助</span></button>
-          <button class="icon-button" id="github-button" data-act="github-open" title="GitHub 地址待配置" aria-label="GitHub 项目页" disabled><svg><use href="#i-github"/></svg><span>GitHub</span></button>
-          <button class="icon-button" id="refresh-button" title="刷新状态" aria-label="刷新状态"><svg><use href="#i-refresh"/></svg><span>刷新</span></button>
-          <button class="icon-button exit-button" data-act="exit-client" title="退出客户端" aria-label="退出客户端"><svg><use href="#i-exit"/></svg><span>退出</span></button>
+          <span class="topbar-divider"></span>
+          <div class="bar-actions">
+            <button class="icon-button sponsor-button" data-act="sponsor" title="赞助作者" aria-label="赞助作者"><svg><use href="#i-heart"/></svg><span>赞助</span></button>
+            <button class="icon-button" id="github-button" data-act="github-open" title="GitHub 地址待配置" aria-label="GitHub 项目页" disabled><svg><use href="#i-github"/></svg><span>GitHub</span></button>
+            <button class="icon-button" id="refresh-button" title="刷新状态" aria-label="刷新状态"><svg><use href="#i-refresh"/></svg><span>刷新</span></button>
+            <button class="icon-button exit-button" data-act="exit-client" title="退出客户端" aria-label="退出客户端"><svg><use href="#i-exit"/></svg><span>退出</span></button>
+          </div>
         </div>
       </header>
 
       <main id="page-root" class="page-root" aria-live="polite">
         <div class="loading-card"><span class="loader"></span><span>正在读取助手状态…</span></div>
       </main>
-      <footer class="app-footer"><span>桌破中控</span><span class="footer-version">v1.2</span><span>by阿丸Awan</span></footer>
+      <footer class="app-footer">
+        <span class="footer-brand">桌破中控</span><span class="footer-version">v1.2</span><span class="footer-author">by 阿丸Awan</span>
+        <span class="footer-keys"><kbd>1</kbd>–<kbd>6</kbd> 切换页面<i>·</i><kbd>Ctrl</kbd>+<kbd>R</kbd> 刷新</span>
+      </footer>
     </section>
   </div>
 

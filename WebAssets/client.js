@@ -11,6 +11,7 @@
     lineage: {}, lineageLoading: null, lineageError: '',
     lineageReports: {}, lineageReportLoading: null, lineageReportError: '',
     auction: null, auctionLoading: null,
+    lootFilters: { query: '', account: '', period: 'all' },
     auctionSettings: { enabled: false, intervalMinutes: 60, lastRunUtc: 0 },
     updateSettings: { repositoryUrl: '', enabled: true, ignoredVersion: '', lastCheckedUtc: 0 },
     updateStatus: { kind: 'waiting', message: 'GitHub 地址待配置。' },
@@ -20,6 +21,15 @@
   const viewNames = {
     overview: '账号状态', loot: '掉落记录', lineage: '血脉鉴定', auction: '拍卖助手',
     helpers: '助手设置', settings: '运行设置',
+  };
+  // 每个页面在顶栏只留一行标题和一行说明，正文直接从数据开始。
+  const viewMeta = {
+    overview: '主机与各沙箱的游戏、助手与运行状态',
+    loot: '各账号上报的可交易物品与掉落来源',
+    lineage: '赌博、远古与黑雾运气，按助手统计口径折算百分位',
+    auction: '巡查空位、从仓库取物并补满上架槽',
+    helpers: '按环境管理 X1X 助手页面与配对信息',
+    settings: '实例扫描、端口范围、锁帧与客户端更新',
   };
   const api = async (path, options = {}) => {
     let response;
@@ -250,6 +260,7 @@
     state.view = view;
     $$('.nav-item').forEach((button) => button.classList.toggle('active', button.dataset.view === view));
     $('#page-title').textContent = viewNames[view];
+    $('#page-desc').textContent = viewMeta[view] || '';
     renderCurrent();
     if (view === 'loot') loadSteam();
     if (view === 'lineage') loadLineageReports();
@@ -258,8 +269,20 @@
     if (view === 'helpers') { loadWorkspaces().then(renderHelpers); loadHidden().then(() => { if (state.view === 'helpers') renderHelpers(); }); }
   }
 
-  function intro(kicker, title, description, actions = '') {
-    return `<div class="page-intro"><div class="intro-copy"><h1>${esc(title)}</h1><p>${esc(description)}</p></div>${actions ? `<div class="intro-actions">${actions}</div>` : ''}</div>`;
+  /* 页面结构件：正文不再重复页面标题，只用「条」和「组」组织内容。 */
+  function statStrip(items) {
+    return `<section class="stat-strip">${items.map((item) => `<div class="stat${item.tone ? ` ${item.tone}` : ''}">
+      <span class="stat-label">${esc(item.label)}</span>
+      <span class="stat-value">${item.value}</span>
+      ${item.note ? `<span class="stat-note">${esc(item.note)}</span>` : ''}
+    </div>`).join('')}</section>`;
+  }
+
+  function sectionBar(title, { count = '', actions = '', note = '' } = {}) {
+    return `<div class="section-bar">
+      <div class="section-bar-main"><h2>${esc(title)}</h2>${count ? `<span class="count-tag">${count}</span>` : ''}</div>
+      ${actions ? `<div class="section-bar-actions">${actions}</div>` : ''}
+    </div>${note ? `<p class="section-note">${note}</p>` : ''}`;
   }
 
   function button(action, label, tone = '', extra = '', symbol = '') {
@@ -275,15 +298,19 @@
     else if (state.view === 'settings') renderSettings();
   }
 
+  function updateStatePill() {
+    const status = state.updateStatus || {};
+    const label = ({ checking: '正在检测', available: '发现新版本', latest: '已是最新', ignored: '已忽略此版本', error: '检测失败' })[status.kind] || '待配置';
+    return `<span class="state-pill ${status.kind === 'available' ? 'active' : status.kind === 'error' ? 'wait' : ''}">${label}</span>`;
+  }
+
   function renderUpdatePanel() {
     const settings = state.updateSettings || {};
     const status = state.updateStatus || {};
     const repo = githubRepository(settings.repositoryUrl);
-    const label = ({ checking: '正在检测', available: '发现新版本', latest: '已是最新', ignored: '已忽略此版本', error: '检测失败' })[status.kind] || '待配置';
-    return `<section class="panel update-panel">
-      <div class="panel-title"><div><h3>版本检测</h3><p>应用启动时检测，运行期间每 12 小时检测一次。</p></div><span class="state-pill ${status.kind === 'available' ? 'active' : status.kind === 'error' ? 'wait' : ''}">${label}</span></div>
+    return `<section class="panel">
       <div class="form-grid">
-        <div class="form-field full"><label for="update-repo-url">GitHub 仓库地址</label><input class="field" id="update-repo-url" type="url" value="${esc(settings.repositoryUrl || '')}" placeholder="项目上传后填写 GitHub 项目页"><div class="update-repo-hint">上传项目并创建 Release 后，填写仓库主页或 Releases 地址即可启用检测。</div></div>
+        <div class="form-field full"><label for="update-repo-url">GitHub 仓库地址</label><input class="field" id="update-repo-url" type="url" value="${esc(settings.repositoryUrl || '')}" placeholder="项目上传后填写 GitHub 项目页"><div class="form-hint">上传项目并创建 Release 后，填写仓库主页或 Releases 地址即可启用检测。</div></div>
         <div class="form-field full"><label class="check-line"><input id="update-enabled" type="checkbox" ${settings.enabled !== false ? 'checked' : ''}>启动时自动检测，并每 12 小时检查一次</label></div>
       </div>
       <div class="update-status ${status.kind === 'available' ? 'available' : status.kind === 'error' ? 'error' : ''}">
@@ -291,7 +318,7 @@
         <span>当前版本 <b>v${APP_VERSION}</b>${status.latestVersion ? ` · 最新版本 <b class="update-version">${esc(status.latestVersion)}</b>` : ''}</span>
         ${status.releaseUrl ? `<a class="btn compact" href="${esc(status.releaseUrl)}" target="_blank" rel="noopener">查看发布页</a>` : ''}
       </div>
-      <div class="update-actions">
+      <div class="form-actions">
         <button class="btn" data-act="update-check" ${repo ? '' : 'disabled'}>${icon('refresh')}立即检测</button>
         <button class="btn" data-act="update-ignore" ${status.kind === 'available' ? '' : 'hidden'}>不再提醒此版本</button>
         <button class="btn primary" data-act="update-settings-save">保存检测设置</button>
@@ -301,9 +328,14 @@
 
   function renderGlobalFrameCapSettings() {
     const setting = state.globalFrameCap || { enabled: false, fps: 10 };
-    return `<section class="panel frame-cap-settings-panel">
-      <div class="panel-title"><div><h3>全局锁帧</h3><p>账号状态页的开关会统一应用到当前和后续启动的游戏。</p></div><span class="state-pill ${setting.enabled ? 'active' : ''}">${setting.enabled ? `已开启 · ${Number(setting.fps) || 10} 帧` : '已关闭'}</span></div>
-      <div class="form-grid"><div class="form-field"><label for="global-frame-cap-rate">全局帧率上限</label><select class="select" id="global-frame-cap-rate" data-act="global-frame-cap-rate"><option value="10" ${Number(setting.fps) === 30 ? '' : 'selected'}>10 帧</option><option value="30" ${Number(setting.fps) === 30 ? 'selected' : ''}>30 帧</option></select><p class="form-hint">挡位变更会即时应用；关闭状态下只保存挡位。</p></div></div>
+    return `<section class="panel">
+      <div class="form-field">
+        <label for="global-frame-cap-rate">全局帧率上限</label>
+        <div class="field-row">
+          <select class="select" id="global-frame-cap-rate" data-act="global-frame-cap-rate"><option value="10" ${Number(setting.fps) === 30 ? '' : 'selected'}>10 帧</option><option value="30" ${Number(setting.fps) === 30 ? 'selected' : ''}>30 帧</option></select>
+          <p class="form-hint">挡位变更会即时应用；关闭状态下只保存挡位。账号状态页的开关会统一应用到当前和后续启动的游戏。</p>
+        </div>
+      </div>
     </section>`;
   }
 
@@ -313,6 +345,8 @@
       $('#page-root').innerHTML = `<div class="loading-card"><span class="loader"></span><span>正在读取助手状态…</span></div>`;
       return;
     }
+    // 7 秒一次的轮询会重绘整页；菜单展开时跳过，免得点到一半被收起来。
+    if (document.querySelector('.env-more.open')) return;
     const summary = data.summary || {};
     const instances = managedInstances();
     const online = instances.filter((item) => item.paired).length;
@@ -321,32 +355,47 @@
     const runningGames = instances.filter((item) => item.paired && item.game?.running);
     const allWindowsHidden = runningGames.length > 0 && runningGames.every((item) => state.gameWindows[String(item.port)] === 'hidden');
     const capEnabled = state.globalFrameCap.enabled === true;
-    $('#page-root').innerHTML = `${intro('ACCOUNT STATUS / LIVE VIEW', '账号状态', '管理主机与各沙箱的游戏、助手和独立设置。')}
-      <section class="run-band">
-        <div class="run-band-main">
-          <strong>${online ? `${number(online)} 个账号正在连接` : '主机与沙箱启动台'}</strong>
-          <span>${online ? `${number(auto)} 个账号运行全自动，${number(games)} 个游戏进程在线。` : '选择对应环境，可分别启动游戏或 X1X 助手。'}</span>
-        </div>
-        <div class="run-band-meta">
-          <span>${esc(new Date().toLocaleDateString('zh-CN'))}</span>
-          <span>${data.ports?.length ? `端口 ${data.ports[0]}—${data.ports[data.ports.length - 1]}` : '端口待分配'}</span>
-        </div>
-      </section>
-      <section class="metrics">
-        ${metric('在线账号', `${number(summary.online ?? online)}<small>/${number(summary.paired ?? online)} 已配对</small>`, '本机助手连接数', 'accent', 'overview')}
-        ${metric('全自动运行', `${number(summary.auto_on ?? auto)}<small>个账号</small>`, `游戏进程 ${number(games)} 个`, '', 'ops')}
-        ${metric('市场珍品', `${number(summary.steam_found)}<small>件</small>`, '已记录的可交易物品', 'copper', 'loot')}
-        ${metric('近期掉落', `${number(summary.drops)}<small>条</small>`, `远古记录 ${number(summary.ancient)} 条`, '', 'box')}
-      </section>
-      ${state.workspaceError ? `<div class="offline-copy">环境读取失败：${esc(state.workspaceError)}</div>` : ''}
-      <div class="section-head"><div class="section-head-main"><div class="section-head-titleline"><h2>账号状态</h2><div class="section-head-actions">
-        <button class="btn compact" data-act="window-toggle-all" title="${allWindowsHidden ? '显示全部游戏窗口' : '隐藏全部游戏窗口'}" ${runningGames.length ? '' : 'disabled'}>${icon(allWindowsHidden ? 'eye' : 'eye-off')}${allWindowsHidden ? '显示全部窗口' : '隐藏全部窗口'}</button>
-        <button class="btn compact ${capEnabled ? 'danger' : 'soft'}" data-act="global-frame-cap-toggle" aria-pressed="${capEnabled}" title="全局锁帧 ${capEnabled ? '已开启' : '已关闭'}">${icon(capEnabled ? 'stop' : 'spark')}${capEnabled ? '关闭全局锁帧' : '开启全局锁帧'}</button>
-        </div><span class="count-tag">${instances.length} 个账号</span></div><p>${esc(globalFrameCapSummary())}</p></div></div>
-      <section class="account-grid">${instances.length ? instances.map(renderAccount).join('') : empty('box', '没有发现账号', '到运行设置中检查扫描目录与端口范围。')}</section>`;
+    $('#page-root').innerHTML = `${statStrip([
+      { label: '在线账号', value: `${number(summary.online ?? online)}<small>/${number(summary.paired ?? instances.length)}</small>`, note: '助手已连接 / 已配对', tone: 'accent' },
+      { label: '全自动运行', value: number(summary.auto_on ?? auto), note: `游戏进程 ${number(games)} 个` },
+      { label: '市场珍品', value: `${number(summary.steam_found)}<small>件</small>`, note: '已记录的可交易物品', tone: 'copper' },
+      { label: '近期掉落', value: `${number(summary.drops)}<small>条</small>`, note: `远古记录 ${number(summary.ancient)} 条` },
+    ])}
+    ${state.workspaceError ? `<div class="callout danger">环境读取失败：${esc(state.workspaceError)}</div>` : ''}
+    ${sectionBar('环境', {
+      count: `${instances.length} 个`,
+      note: capEnabled ? esc(globalFrameCapSummary()) : '',
+      actions: `<button class="btn compact" data-act="window-toggle-all" title="${allWindowsHidden ? '显示全部游戏窗口' : '隐藏全部游戏窗口'}" ${runningGames.length ? '' : 'disabled'}>${icon(allWindowsHidden ? 'eye' : 'eye-off')}${allWindowsHidden ? '显示全部窗口' : '隐藏全部窗口'}</button>
+        <button class="btn compact ${capEnabled ? 'danger' : ''}" data-act="global-frame-cap-toggle" aria-pressed="${capEnabled}" title="全局锁帧 ${capEnabled ? '已开启' : '已关闭'}">${icon(capEnabled ? 'stop' : 'spark')}${capEnabled ? `关闭全局锁帧 · ${Number(state.globalFrameCap.fps) || 10} 帧` : '开启全局锁帧'}</button>`,
+    })}
+    <section class="env-grid">${instances.length ? instances.map(renderAccount).join('') : empty('box', '没有发现账号', '到运行设置中检查扫描目录与端口范围。')}</section>
+    ${renderRecentDrops()}`;
     $('#side-port').textContent = data.ports?.length ? `${data.ports[0]}—${data.ports[data.ports.length - 1]}` : '—';
     $('#side-version').textContent = data.versions?.hub ? `v${data.versions.hub}` : '本地';
     setEngineState(true, `${number(summary.online ?? online)} 个助手在线`);
+  }
+
+  /* 账号状态页的「近期掉落」：只是掉落记录页的缩影，不额外造数据。 */
+  function renderRecentDrops() {
+    const rows = (state.steam?.rows || []).slice(0, 6);
+    if (!rows.length) return '';
+    const body = rows.map((row) => {
+      const cls = rarityClass(row);
+      return `<tr>
+        <td class="mono">${esc(when(row.t, true))}</td>
+        <td>${esc(row.account || `端口 ${row.port || '—'}`)}</td>
+        <td><span class="strong-cell ${cls ? `rarity-${cls}` : ''}">${esc(displayItemName(row))}</span></td>
+        <td><span class="rarity-tag ${cls}">${esc(rarityName(row))}</span></td>
+        <td class="muted-cell">${esc([row.map_name, row.boss].filter(Boolean).join(' / ') || '—')}</td>
+      </tr>`;
+    }).join('');
+    return `${sectionBar('近期掉落', {
+      count: `${number(state.steam?.rows?.length || 0)} 条`,
+      actions: button('open-loot', '查看全部记录', 'compact', '', 'loot'),
+    })}
+    <section class="panel table-panel">
+      <div class="data-table-wrap"><table class="data-table drops-table"><thead><tr><th>时间</th><th>账号</th><th>物品</th><th>品质</th><th>地图 / 首领</th></tr></thead><tbody>${body}</tbody></table></div>
+    </section>`;
   }
 
   function globalFrameCapSummary() {
@@ -363,8 +412,31 @@
     return `全局锁帧 ${Number(settings.fps) || 10} 帧；${applied}/${statuses.length} 个游戏已确认${waiting ? `，${waiting} 个等待游戏就绪` : ''}。`;
   }
 
-  function metric(label, value, note, tone, symbol) {
-    return `<article class="metric ${tone}"><div class="metric-top"><span>${esc(label)}</span>${icon(symbol)}</div><div class="metric-value">${value}</div><div class="metric-note">${esc(note)}</div></article>`;
+  /* 卡片的次级操作收进「更多」菜单：常驻的只有自动、游戏、窗口三个动词。 */
+  function envMenu(port, workspace, update, paired) {
+    const busy = ['checking', 'downloading', 'installing', 'applying', 'updating'].includes(String(update.state || ''));
+    const progress = describeProgress(update.progress);
+    const updateLabel = busy
+      ? (update.state === 'checking' ? '正在检查版本' : `正在安装 ${progress}`.trim())
+      : update.state === 'available' ? `更新助手到 ${esc(update.version || '新版本')}`
+      : update.state === 'latest' ? '助手已是最新版本'
+      : update.state === 'error' ? '重新检查助手版本' : '检查助手更新';
+    const updateAct = update.state === 'available' ? 'update' : 'check-update';
+    const wsAttr = workspace ? `data-workspace="${esc(workspace.id)}"` : '';
+    const running = !!workspace?.helperRunning;
+    return `<div class="env-more">
+      <button class="btn icon-only" data-menu-toggle aria-haspopup="menu" aria-expanded="false" title="更多操作" aria-label="更多操作">${icon('chevron')}</button>
+      <div class="menu" role="menu">
+        <button class="menu-item" role="menuitem" data-act="${updateAct}" data-port="${port}" data-version="${esc(update.version || '')}" ${busy ? 'disabled' : ''}>
+          ${icon('download')}<span><b>${updateLabel}</b><i>${paired ? '停自动 → 关游戏 → 安装 → 回游戏' : '按当前助手版本检查'}</i></span></button>
+        <button class="menu-item" role="menuitem" data-act="host" data-port="${port}">${icon('box')}<span><b>部署游戏内助手</b><i>向该实例提交安装请求</i></span></button>
+        <div class="menu-sep" role="separator"></div>
+        <button class="menu-item" role="menuitem" data-act="workspace-helper" ${wsAttr} data-port="${port}" ${running ? '' : 'disabled'}>${icon('settings')}<span><b>打开助手页面</b><i>内嵌 X1X 设置页</i></span></button>
+        <button class="menu-item" role="menuitem" data-act="workspace-launch-helper" ${wsAttr} data-port="${port}" ${!running && workspace?.helperDirectory ? '' : 'disabled'}>${icon('play')}<span><b>启动助手</b><i>该环境的 X1X 进程</i></span></button>
+        <button class="menu-item" role="menuitem" data-act="workspace-browser" ${wsAttr} data-port="${port}" ${running ? '' : 'disabled'}>${icon('external')}<span><b>浏览器打开</b><i>携带该环境的配对信息</i></span></button>
+        <button class="menu-item" role="menuitem" data-act="workspace-config" ${wsAttr} data-port="${port}">${icon('box')}<span><b>环境设置</b><i>助手目录、游戏路径与启动方式</i></span></button>
+      </div>
+    </div>`;
   }
 
   function renderAccount(account) {
@@ -374,6 +446,7 @@
     const gameOn = !!account.game?.running;
     const hidden = state.gameWindows[String(port)] === 'hidden';
     const workspace = account.workspace;
+    const portAttr = `data-port="${port}"`;
     const workspaceAttr = workspace ? `data-workspace="${esc(workspace.id)}"` : '';
     const character = account.char || {};
     const paragon = character.paragon || {};
@@ -390,53 +463,50 @@
       : (lineage?.error || (lineage?.character ? '累计样本不足' : '助手血脉鉴定'));
     const stateClass = !paired ? 'wait' : (gameOn ? 'game' : (running ? 'active' : ''));
     const stateText = !paired ? (gameOn ? '游戏在线 · 助手离线' : '助手未连接') : (gameOn ? '游戏在线' : (running ? '全自动运行' : '已连接'));
+    const launchWait = account.game?.launch_waiting && !gameOn;
     const lootText = market.slice(0, 2).map((item) => {
       const cls = rarityClass(item);
       return `<span class="${cls ? `rarity-${cls}` : ''}">${esc(item.ancient ? '远古 ' : '')}${esc(displayItemName(item))}</span>`;
-    }).join('<span class="muted"> · </span>') || '暂无掉落记录';
-    const launchWait = account.game?.launch_waiting && !gameOn;
-    const updateBusy = ['checking', 'downloading', 'installing', 'applying', 'updating'].includes(String(update.state || ''));
-    const updateProgress = describeProgress(update.progress);
-    const updateLabel = updateBusy
-      ? (update.state === 'checking' ? '检查中' : `安装中${updateProgress ? ' ' + updateProgress : ''}`)
-      : update.state === 'available' ? `更新 ${esc(update.version || '')}`
-      : update.state === 'latest' ? '已是最新'
-      : update.state === 'error' ? '重试检查' : '检查更新';
-    const updateAction = update.state === 'available' ? 'update' : 'check-update';
-    return `<article class="account-card ${paired ? '' : 'offline'}" data-port="${port}">
-      <div class="account-head">
-        <div class="account-avatar">${esc(workspace ? (workspace.sandbox || '主机') : String(port).slice(-3) || '—')}</div>
-        <div class="account-title"><div class="account-name-row"><span class="account-name">${esc(account.label || `实例 ${port}`)}</span>
-          <button class="rename-button" data-act="${workspace ? 'workspace-config' : 'rename'}" ${workspaceAttr} data-port="${port}" title="环境设置">${icon('settings')}</button>
-          ${workspace ? `<button class="rename-button remove-button" data-act="hide-account" ${workspaceAttr} data-port="${port}" title="从账号状态页移除（配置保留，可在助手设置恢复）" aria-label="移除环境">${icon('close')}</button>` : ''}</div>
-          <div class="account-meta"><span class="port-pill">${port ? `PORT ${port}` : '待启动'}</span><span>${esc(sandboxName(account.sandbox))}</span>${account.helper?.version ? `<span>助手 ${esc(account.helper.version)}</span>` : ''}</div>
+    }).join('<span class="sep">·</span>') || '暂无掉落记录';
+    const badge = workspace ? (workspace.sandbox || '主机') : (String(port).slice(-2) || '—');
+    const level = character.level == null ? '—' : `Lv.${number(character.level)}`;
+    return `<article class="env-card ${paired ? 'is-online' : 'is-offline'}" ${portAttr}>
+      <header class="env-head">
+        <div class="env-badge">${esc(badge)}</div>
+        <div class="env-id">
+          <div class="env-name-row">
+            <h3 class="env-name">${esc(account.label || `实例 ${port}`)}</h3>
+            ${workspace ? `<button class="env-icon" data-act="workspace-config" ${workspaceAttr} title="环境设置" aria-label="环境设置">${icon('settings')}</button>` : ''}
+            ${workspace ? `<button class="env-icon env-remove" data-act="hide-account" ${workspaceAttr} title="从账号状态页移除（配置保留，可在助手设置恢复）" aria-label="移除环境">${icon('close')}</button>` : ''}
+          </div>
+          <div class="env-meta">
+            <span class="env-port">${port ? `PORT ${port}` : '待启动'}</span>
+            <span>${esc(sandboxName(account.sandbox))}</span>
+            ${account.helper?.version ? `<span>助手 ${esc(account.helper.version)}</span>` : ''}
+          </div>
         </div>
         <span class="state-pill ${stateClass}">${esc(launchWait ? '游戏启动中' : stateText)}</span>
+      </header>
+      ${paired ? `<div class="env-stats">
+        <div class="env-stat"><span class="env-stat-label">角色等级</span><b class="env-stat-value big">${level}${paragon.level ? `<small>巅峰 ${number(paragon.level)}</small>` : ''}</b></div>
+        <div class="env-stat"><span class="env-stat-label">当前地图</span><b class="env-stat-value" title="${esc(mapName(character))}">${esc(mapName(character))}</b></div>
+        <div class="env-stat"><span class="env-stat-label">炼狱头骨</span><b class="env-stat-value">${inferno == null ? '—' : number(inferno)}</b></div>
+        <div class="env-stat"><span class="env-stat-label">皇家钥匙</span><b class="env-stat-value">${keyCount == null ? '—' : number(keyCount)}</b></div>
+        <div class="env-stat"><span class="env-stat-label">掉落记录</span><b class="env-stat-value">${number(account.steam?.found)}<small>件</small></b></div>
+        <div class="env-stat"><span class="env-stat-label">血脉鉴定</span><b class="env-stat-value ${lineage?.error ? 'wait' : 'violet'}" title="${esc(lineageNote)}">${esc(lineageValue)}</b><button class="link-button" data-act="open-lineage" ${workspaceAttr}>查看鉴定</button></div>
       </div>
-      ${paired ? `<div class="account-body">
-        <div class="data-cell"><div class="data-label">角色等级</div><div class="data-value large">${character.level == null ? '—' : `Lv.${number(character.level)}`}${paragon.level ? ` <small>· 巅峰 ${number(paragon.level)}</small>` : ''}</div></div>
-        <div class="data-cell"><div class="data-label">当前地图</div><div class="data-value" title="${esc(mapName(character))}">${esc(mapName(character))}</div></div>
-        <div class="data-cell"><div class="data-label">运行状态</div><div class="data-value ${running ? 'good' : ''}">${running ? '自动流程运行中' : '等待操作'}</div></div>
-        <div class="data-cell"><div class="data-label">炼狱头骨</div><div class="data-value">${inferno == null ? '—' : number(inferno)}</div></div>
-        <div class="data-cell"><div class="data-label">皇家钥匙</div><div class="data-value">${keyCount == null ? '—' : number(keyCount)}</div></div>
-        <div class="data-cell"><div class="data-label">掉落记录</div><div class="data-value">${number(account.steam?.found)} 件</div></div>
-        <div class="data-cell"><div class="data-label">血脉鉴定</div><div class="data-value ${lineage?.error ? 'wait' : ''}" title="${esc(lineageNote)}">${esc(lineageValue)}</div><div class="data-note"><button class="link-button" data-act="open-lineage" ${workspaceAttr}>查看鉴定</button></div></div>
-      </div><div class="recent-loot"><strong>最近记录</strong>${lootText}</div>
-      <div class="account-actions">
-        ${button(running ? 'auto-off' : 'auto-on', running ? '停止自动' : '开启自动', running ? 'danger compact' : 'soft compact', `data-port="${port}"`, running ? 'stop' : 'play')}
-        ${button(gameOn ? 'game-close' : (workspace ? 'workspace-launch-game' : 'game-open'), gameOn ? '关闭游戏' : '启动游戏', gameOn ? 'danger compact' : 'compact', `data-port="${port}" ${workspaceAttr}`, 'game')}
-        ${button(hidden ? 'window-show' : 'window-hide', hidden ? '显示窗口' : '隐藏窗口', 'compact', `data-port="${port}" ${gameOn ? '' : 'disabled'}`, hidden ? 'eye' : 'eye-off')}
-        ${button(updateAction, updateLabel, update.state === 'available' ? 'copper compact' : 'compact', `data-port="${port}" data-version="${esc(update.version || '')}" ${updateBusy ? 'disabled' : ''}`, 'download')}
-        ${button('host', '部署接口', 'compact', `data-port="${port}"`, 'box')}
-      </div>` : `<div class="offline-copy">${esc(workspace?.notice || account.error || '助手当前未连接；游戏与助手可分别启动。')}</div>
-      <div class="account-actions">${workspace ? button('workspace-launch-game', gameOn ? '游戏已运行' : '启动游戏', 'soft compact', `${workspaceAttr} ${gameOn ? 'disabled' : ''}`, 'game') : ''}</div>`}
-      ${workspace ? `<div class="workspace-actions">
-        ${button('workspace-helper', '助手设置', 'compact', `${workspaceAttr} ${workspace.helperRunning ? '' : 'disabled'}`, 'settings')}
-        ${button('workspace-launch-helper', workspace.helperRunning ? '助手已运行' : '启动助手', 'compact', `${workspaceAttr} ${workspace.helperRunning || !workspace.helperDirectory ? 'disabled' : ''}`, 'play')}
-        ${button('workspace-browser', '浏览器打开', 'compact', `${workspaceAttr} ${workspace.helperRunning ? '' : 'disabled'}`, 'external')}
-        ${button('workspace-config', '环境设置', 'compact', workspaceAttr, 'box')}
-      </div>` : ''}
-
+      <div class="env-loot"><strong>最近记录</strong>${lootText}</div>
+      <div class="env-actions">
+        ${button(running ? 'auto-off' : 'auto-on', running ? '停止自动' : '开启自动', running ? 'danger' : 'soft', portAttr, running ? 'stop' : 'play')}
+        ${button(gameOn ? 'game-close' : (workspace ? 'workspace-launch-game' : 'game-open'), gameOn ? '关闭游戏' : '启动游戏', gameOn ? '' : 'soft', `${portAttr} ${workspaceAttr}`, 'game')}
+        ${button(hidden ? 'window-show' : 'window-hide', hidden ? '显示窗口' : '隐藏窗口', '', `${portAttr} ${gameOn ? '' : 'disabled'}`, hidden ? 'eye' : 'eye-off')}
+        ${envMenu(port, workspace, update, paired)}
+      </div>` : `<div class="env-notice">${esc(workspace?.notice || account.error || '助手当前未连接；游戏与助手可分别启动。')}</div>
+      <div class="env-actions">
+        ${workspace ? button('workspace-launch-helper', workspace.helperRunning ? '助手已运行' : '启动助手', workspace.helperRunning ? '' : 'soft', `${workspaceAttr} ${workspace.helperRunning || !workspace.helperDirectory ? 'disabled' : ''}`, 'play') : ''}
+        ${button(gameOn ? 'game-close' : (workspace ? 'workspace-launch-game' : 'game-open'), gameOn ? '游戏已运行' : '启动游戏', gameOn ? '' : 'soft', `${portAttr} ${workspaceAttr} ${gameOn ? 'disabled' : ''}`, 'game')}
+        ${envMenu(port, workspace, update, paired)}
+      </div>`}
     </article>`;
   }
 
@@ -447,29 +517,49 @@
   function renderLoot() {
     const data = state.steam;
     if (!data) {
-      $('#page-root').innerHTML = `${intro('RECORDS / GAME DROPS', '掉落记录', '汇总各账号上报的可交易物品与掉落来源。')}<div class="loading-card"><span class="loader"></span><span>正在读取掉落记录…</span></div>`;
+      $('#page-root').innerHTML = `<div class="loading-card"><span class="loader"></span><span>正在读取掉落记录…</span></div>`;
       return;
     }
+    // 轮询重绘会打断正在输入的筛选条件，交给下一次渲染。
+    const focused = document.activeElement;
+    if (focused && focused.closest?.('#page-root') && /^(INPUT|SELECT|TEXTAREA)$/.test(focused.tagName)) return;
     const totals = data.totals || {};
     const rows = data.rows || [];
     const accounts = data.accounts || [];
+    const filters = state.lootFilters;
     const kindCount = Object.values(totals).reduce((sum, item) => sum + Number(item?.k || 0), 0);
-    const totalsHtml = `<section class="metrics">
-      ${metric('记录总数', `${number(kindCount)}<small>件</small>`, `${number(data.account_count)} 个账号有记录`, 'accent', 'loot')}
-      ${metric('市场黑雾', `${number(totals.black_mist?.k)}<small>件</small>`, `期望 ${(totals.black_mist?.expected || 0).toFixed(2)}`, '', 'spark')}
-      ${metric('神圣装备', `${number(totals.divine?.k)}<small>件</small>`, `期望 ${(totals.divine?.expected || 0).toFixed(2)}`, 'copper', 'box')}
-      ${metric('数据行', `${number(rows.length)}<small>条</small>`, '来自助手本地记录', '', 'overview')}
+    $('#page-root').innerHTML = `${statStrip([
+      { label: '记录总数', value: `${number(kindCount)}<small>件</small>`, note: `${number(data.account_count)} 个账号有记录`, tone: 'accent' },
+      { label: '市场黑雾', value: `${number(totals.black_mist?.k)}<small>件</small>`, note: `期望 ${(totals.black_mist?.expected || 0).toFixed(2)}` },
+      { label: '神圣装备', value: `${number(totals.divine?.k)}<small>件</small>`, note: `期望 ${(totals.divine?.expected || 0).toFixed(2)}`, tone: 'copper' },
+      { label: '数据行', value: `${number(rows.length)}<small>条</small>`, note: '来自助手本地记录' },
+    ])}
+    <section class="panel table-panel">
+      <div class="table-toolbar">
+        <div class="table-toolbar-filters">
+          <div class="search-wrap">${icon('search')}<input class="field search" id="loot-search" type="search" placeholder="搜索物品、账号或地图" value="${esc(filters.query)}"></div>
+          <select class="select" id="loot-account"><option value="">全部账号</option>${accounts.map((item) => `<option value="${esc(item.port)}" ${String(filters.account) === String(item.port) ? 'selected' : ''}>${esc(item.account || `端口 ${item.port}`)}</option>`).join('')}</select>
+          <select class="select" id="loot-period"><option value="all" ${filters.period === 'all' ? 'selected' : ''}>全部时间</option><option value="7" ${filters.period === '7' ? 'selected' : ''}>最近 7 天</option><option value="30" ${filters.period === '30' ? 'selected' : ''}>最近 30 天</option></select>
+        </div>
+        <div class="table-toolbar-actions">
+          <span class="count-tag" id="loot-count">${number(rows.length)} 条</span>
+          ${button('export-csv', '导出 CSV', 'compact', '', 'download')}
+        </div>
+      </div>
+      <div class="data-table-wrap"><table class="data-table"><thead><tr><th>时间</th><th>账号</th><th>物品</th><th>类别</th><th>品质</th><th>来源</th><th>地图 / 首领</th></tr></thead><tbody id="loot-body"></tbody></table></div>
     </section>`;
-    $('#page-root').innerHTML = `${intro('DROP LOG / MARKET ITEMS', '掉落记录', '搜索账号、物品、地图与首领名称。', button('export-csv', '导出 CSV', '', '', 'download'))}
-      ${totalsHtml}<section class="panel"><div class="toolbar"><div class="toolbar-left"><div class="search-wrap">${icon('search')}<input class="field search" id="loot-search" type="search" placeholder="搜索物品、账号或地图"></div>
-      <select class="select" id="loot-account"><option value="">全部账号</option>${accounts.map((item) => `<option value="${esc(item.port)}">${esc(item.account || `端口 ${item.port}`)}</option>`).join('')}</select>
-      <select class="select" id="loot-period"><option value="all">全部时间</option><option value="7">最近 7 天</option><option value="30">最近 30 天</option></select></div>
-      <div class="toolbar-right"><span class="count-tag" id="loot-count">${number(rows.length)} 条</span></div></div>
-      <div class="data-table-wrap"><table class="data-table"><thead><tr><th>时间</th><th>账号</th><th>物品</th><th>类别</th><th>品质</th><th>来源</th><th>地图 / 首领</th></tr></thead><tbody id="loot-body"></tbody></table></div></section>`;
     renderLootRows();
-    $('#loot-search').addEventListener('input', renderLootRows);
-    $('#loot-account').addEventListener('change', renderLootRows);
-    $('#loot-period').addEventListener('change', renderLootRows);
+    const syncFilters = () => {
+      state.lootFilters = {
+        query: $('#loot-search')?.value || '',
+        account: $('#loot-account')?.value || '',
+        period: $('#loot-period')?.value || 'all',
+      };
+      renderLootRows();
+    };
+    $('#loot-search').addEventListener('input', syncFilters);
+    $('#loot-account').addEventListener('change', syncFilters);
+    $('#loot-period').addEventListener('change', syncFilters);
   }
 
   function renderLootRows() {
@@ -530,16 +620,16 @@
     const average = verdicts.length
       ? verdicts.reduce((sum, row) => sum + Number(row.report.percentile), 0) / verdicts.length : null;
     const draws = reports.reduce((sum, row) => sum + Number(row.report?.report?.gamble?.all?.draws || 0), 0);
-    const ancient = reports.reduce((sum, row) => sum + Number(row.report?.report?.drops?.ancient?.k || 0), 0);
-    $('#page-root').innerHTML = `${intro('BLOODLINE / LUCK VERDICT', '血脉鉴定', '汇总各账号的赌博、远古与黑雾运气，按助手统计口径计算百分位。',
-      button('lineage-refresh', '刷新鉴定', '', '', 'refresh'))}
-      <section class="metrics">
-        ${metric('已鉴定账号', `${number(verdicts.length)}<small>/${number(reports.length)} 个环境</small>`, loaded ? '助手已返回鉴定结果' : '正在读取助手记录', 'accent', 'lineage')}
-        ${metric('平均百分位', `${average == null ? '—' : average.toFixed(1)}<small>%</small>`, '仅统计已有结论的账号', 'copper', 'spark')}
-        ${metric('赌博次数', `${number(draws)}<small>次</small>`, '各账号累计抽取', '', 'box')}
-        ${metric('远古掉落', `${number(ancient)}<small>件</small>`, '有样本的传奇装备', '', 'loot')}
-      </section>
-      ${state.lineageReportError ? `<div class="offline-copy">血脉记录读取失败：${esc(state.lineageReportError)}</div>` : ''}
+    const ancient = reports.reduce((sum, row) => sum
+      + Number(row.report?.report?.drops?.ancient?.k ?? row.report?.report?.families?.ancient?.k ?? 0), 0);
+    $('#page-root').innerHTML = `${statStrip([
+      { label: '已鉴定账号', value: `${number(verdicts.length)}<small>/${number(reports.length)}</small>`, note: loaded ? '助手已返回鉴定结果' : '正在读取助手记录', tone: 'accent' },
+      { label: '平均百分位', value: `${average == null ? '—' : average.toFixed(1)}<small>%</small>`, note: '仅统计已有结论的账号', tone: 'copper' },
+      { label: '赌博次数', value: `${number(draws)}<small>次</small>`, note: '各账号累计抽取' },
+      { label: '远古掉落', value: `${number(ancient)}<small>件</small>`, note: '有样本的传奇装备' },
+    ])}
+      ${state.lineageReportError ? `<div class="callout danger">血脉记录读取失败：${esc(state.lineageReportError)}</div>` : ''}
+      ${sectionBar('账号鉴定', { count: `${reports.length} 个环境`, actions: button('lineage-refresh', '刷新鉴定', 'compact', '', 'refresh') })}
       <section class="lineage-grid">${reports.map((row) => renderLineageCard(row)).join('')}</section>`;
   }
 
@@ -603,27 +693,29 @@
   function renderAuction() {
     const data = state.auction;
     if (!data) {
-      $('#page-root').innerHTML = `${intro('AUCTION / SCHEDULED LISTING', '拍卖助手', '巡查拍卖行空位，从仓库取回可交易珍品并上架。')}
-        <div class="loading-card"><span class="loader"></span><span>正在检查助手能力与可交易物品…</span></div>`;
+      $('#page-root').innerHTML = `<div class="loading-card"><span class="loader"></span><span>正在检查助手能力与可交易物品…</span></div>`;
       return;
     }
     const accounts = data.accounts || [];
     const candidates = accounts.reduce((sum, row) => sum + (row.items?.length || 0), 0);
     const supported = data.supported === true;
-    const notice = supported ? '' : `<section class="panel unsupported-panel">
-      <div class="unsupported-head">${icon('auction')}<div><h2>自动上架暂不可用</h2><p>当前 X1X 助手与游戏内助手没有提供拍卖行查询、空位读取和上架接口。</p></div></div>
-      <div class="unsupported-body"><p>客户端无法在不模拟点击、不伪造队列的前提下完成「暂停自动流程 → 回城 → 从仓库取出珍品 → 填满上架空位 → 恢复自动」。为避免误操作账号或错误上架，1.2 只做能力检测，不提交任何上架请求。</p>
-      <p>接口开放后，此处会直接启用间隔巡查、仓库取物、上架与自动恢复；现有设置和运行记录会保留。下方候选清单按拍卖行可交易品质筛选，方便你先核对手上的珍品。</p></div></section>`;
-    $('#page-root').innerHTML = `${intro('AUCTION / SCHEDULED LISTING', '拍卖助手', '按设定时间巡查拍卖行，空位存在时从仓库取出可交易珍品补满，期间暂停自动流程。',
-      button('auction-refresh', '重新扫描', '', '', 'refresh'))}
-      <section class="metrics">
-        ${metric('可上架候选', `${number(candidates)}<small>件</small>`, '待游戏内核对可交易标签', 'accent', 'auction')}
-        ${metric('在线账号', `${number(accounts.filter((row) => !row.error).length)}<small>个</small>`, '已读取助手与游戏数据', '', 'overview')}
-        ${metric('自动上架', supported ? '可用' : '待接口', supported ? '助手已提供拍卖行接口' : '当前助手缺少拍卖行接口', supported ? 'copper' : '', 'spark')}
-        ${metric('巡查间隔', '60<small>分钟</small>', '建议值与游戏自动存档错开', '', 'clock')}
-      </section>
+    const notice = supported ? '' : `<section class="callout notice">
+      <div class="callout-head">${icon('auction')}<h3>自动上架暂不可用</h3></div>
+      <p>当前 X1X 助手与游戏内助手没有提供拍卖行查询、空位读取和上架接口。客户端无法在不模拟点击、不伪造队列的前提下完成「暂停自动流程 → 回城 → 从仓库取出珍品 → 填满上架空位 → 恢复自动」。</p>
+      <p>为避免误操作账号或错误上架，1.2 只做能力检测，不提交任何上架请求。接口开放后此处会直接启用间隔巡查、仓库取物、上架与自动恢复，现有设置和运行记录都会保留。下方候选清单按拍卖行可交易品质筛选，方便你先核对手上的珍品。</p>
+    </section>`;
+    $('#page-root').innerHTML = `${statStrip([
+      { label: '可上架候选', value: `${number(candidates)}<small>件</small>`, note: '待游戏内核对可交易标签', tone: 'accent' },
+      { label: '在线账号', value: `${number(accounts.filter((row) => !row.error).length)}<small>个</small>`, note: '已读取助手与游戏数据' },
+      { label: '自动上架', value: supported ? '可用' : '待接口', note: supported ? '助手已提供拍卖行接口' : '当前助手缺少拍卖行接口', tone: supported ? 'copper' : '' },
+      { label: '巡查间隔', value: '60<small>分钟</small>', note: '建议与游戏自动存档错开' },
+    ])}
       ${notice}
-      <div class="section-head"><div class="section-head-main"><div class="section-head-titleline"><h2>候选物品</h2><span class="count-tag">${number(candidates)} 件</span></div><p>按品质与物品类型初筛：黑雾装备、神圣装备、符文套装、传奇符文与传奇缰绳；已锁定、已强化、已镶嵌或未铸造的物品不列入。最终能否上架仍以游戏物品提示中的可交易标签为准。</p></div></div>
+      ${sectionBar('候选物品', {
+        count: `${number(candidates)} 件`,
+        actions: button('auction-refresh', '重新扫描', 'compact', '', 'refresh'),
+        note: '按品质与物品类型初筛：黑雾装备、神圣装备、符文套装、传奇符文与传奇缰绳；已锁定、已强化、已镶嵌或未铸造的物品不列入。最终能否上架仍以游戏物品提示中的可交易标签为准。',
+      })}
       <section class="auction-grid">${accounts.map(renderAuctionAccount).join('') || empty('auction', '没有可用账号', '请先在账号状态启动助手与游戏。')}</section>
       <details class="panel auction-flow"><summary>自动上架流程（接口就绪后启用）</summary><ol class="flow-list">
         <li>到达巡查时间后，读取拍卖行已上架数量与剩余空位。</li>
@@ -647,18 +739,18 @@
       <div class="panel-title"><div><h3>${esc(row.name || `端口 ${row.port}`)}</h3><p>${esc(row.character || '等待角色')} · ${esc(areaLabel(row.area))}${row.mode === 'Online' ? '' : ' · 离线角色无法交易'}</p></div><span class="state-pill ${items.length && row.mode !== 'Local' ? 'active' : ''}">${number(items.length)} 件候选</span></div>
       ${row.mode && row.mode !== 'Online' ? '<p class="lineage-empty">此角色为离线角色，拍卖行只接受在线角色交易。</p>' : ''}
       ${items.length ? `<div class="data-table-wrap"><table class="data-table compact"><thead><tr><th>物品</th><th>品质</th><th>类别</th><th>所在</th><th>物品等级</th></tr></thead><tbody>${rows}</tbody></table></div>
-        ${items.length > 40 ? `<p class="form-hint">仅显示前 40 件，共 ${number(items.length)} 件。</p>` : ''}` : '<p class="lineage-empty">没有符合上架条件的物品。</p>'}
+        ${items.length > 40 ? `<p class="form-hint">仅显示前 40 件，共 ${number(items.length)} 件。</p>` : ''}`
+        : (row.mode && row.mode !== 'Online' ? '' : '<p class="lineage-empty">没有符合上架条件的物品。</p>')}
     </article>`;
   }
 
-  function renderWorkspacePanel() {
-    const rows = state.workspaces.map((row) => `<div class="workspace-row">
-      <div><strong>${esc(row.name)}</strong><div class="workspace-path">${esc(row.helperDirectory || '助手目录待选择')}</div></div>
+  function renderEnvPanel() {
+    const rows = state.workspaces.map((row) => `<div class="env-row">
+      <div class="env-row-main"><strong>${esc(row.name)}</strong><span class="env-path">${esc(row.helperDirectory || '助手目录待选择')}</span></div>
       ${button('workspace-config', '环境设置', 'compact', `data-workspace="${esc(row.id)}"`, 'settings')}
     </div>`).join('');
-    return `<section class="panel"><div class="panel-title"><div><h3>主机与沙箱</h3><p>每个环境保存独立的助手目录、游戏路径和启动方式。助手更新时按原目录和配对信息查找新版本。</p></div></div>
-      ${rows || '<div class="offline-copy">正在读取账号环境…</div>'}
-      ${state.workspaceError ? `<p class="offline-copy">${esc(state.workspaceError)}</p>` : ''}</section>`;
+    return `<section class="panel env-panel">${rows || '<p class="env-empty">正在读取账号环境…</p>'}
+      ${state.workspaceError ? `<div class="callout danger">${esc(state.workspaceError)}</div>` : ''}</section>`;
   }
 
   function renderHiddenPanel() {
@@ -670,32 +762,39 @@
       </div>
     </div>`).join('');
     return `<section class="panel env-panel">
-      <div class="panel-title"><div><h3>环境管理</h3><p>扫描到的沙箱可以移出账号状态页；隐藏只影响显示，配置与配对信息都保留。</p></div><span class="count-tag">${state.hidden.length} 个已隐藏</span></div>
       <div class="env-add">
         <input class="field" id="env-new-sandbox" placeholder="Sandboxie 沙盘名，例如 5；留空表示主机">
         ${button('add-account', '手动添加环境', 'compact', '', 'box')}
       </div>
       <div class="env-list">${rows || '<p class="env-empty">没有隐藏的环境。账号卡片右上角的 × 可以把扫描到但不需要的沙箱移出列表。</p>'}</div>
-      ${state.hiddenError ? `<p class="offline-copy">隐藏环境读取失败：${esc(state.hiddenError)}</p>` : ''}
+      ${state.hiddenError ? `<div class="callout danger">隐藏环境读取失败：${esc(state.hiddenError)}</div>` : ''}
     </section>`;
   }
 
   function renderHelpers() {
     if (state.view !== 'helpers') return;
-    $('#page-root').innerHTML = `${intro('HELPER SETTINGS / ISOLATED ENVIRONMENTS', '助手设置', '选择主机或沙箱，打开该环境的 X1X 助手页面。各环境使用独立网页存储与配对信息。')}
-      <div class="helper-note">内嵌页面由 X1X 官网提供，需要联网。保存设置会调用当前环境的助手；「浏览器打开」会重新携带该助手的配对信息。</div>
-      ${state.workspaceError ? `<div class="offline-copy">${esc(state.workspaceError)}</div>` : ''}
+    $('#page-root').innerHTML = `${sectionBar('助手环境', {
+      count: `${state.workspaces.length} 个`,
+      note: '内嵌页面由 X1X 官网提供，需要联网；「浏览器打开」会重新携带该助手的配对信息。',
+    })}
+      ${state.workspaceError ? `<div class="callout danger">${esc(state.workspaceError)}</div>` : ''}
       <section class="helper-grid">${state.workspaces.map((row) => `<article class="panel helper-card">
-        <div class="panel-title"><h3>${esc(row.name)}</h3><span class="state-pill ${row.helperRunning ? 'active' : 'wait'}">${row.helperRunning ? '助手运行中' : '助手未启动'}</span></div>
-        <p class="workspace-path">${esc(row.helperDirectory || '请先选择助手目录')}</p>
-        ${row.notice ? `<p class="offline-copy">${esc(row.notice)}</p>` : ''}
-        <div class="workspace-actions">
+        <div class="helper-head">
+          <div class="helper-id"><h3>${esc(row.name)}</h3><p class="workspace-path">${esc(row.helperDirectory || '请先选择助手目录')}</p></div>
+          <span class="state-pill ${row.helperRunning ? 'active' : 'wait'}">${row.helperRunning ? '助手运行中' : '助手未启动'}</span>
+        </div>
+        ${row.notice ? `<div class="callout">${esc(row.notice)}</div>` : ''}
+        <div class="helper-actions">
           ${button('workspace-helper', '打开助手设置', 'primary', `data-workspace="${esc(row.id)}" ${row.helperRunning ? '' : 'disabled'}`, 'settings')}
           ${button('workspace-launch-helper', '启动助手', '', `data-workspace="${esc(row.id)}" ${row.helperRunning || !row.helperDirectory ? 'disabled' : ''}`, 'play')}
           ${button('workspace-launch-game', row.gamePids.length ? '游戏已运行' : '启动游戏', '', `data-workspace="${esc(row.id)}" ${row.gamePids.length ? 'disabled' : ''}`, 'game')}
           ${button('workspace-config', '环境设置', '', `data-workspace="${esc(row.id)}"`, 'box')}
         </div>
       </article>`).join('') || empty('box', '正在读取环境', '读取主机与 Sandboxie 沙箱列表。')}</section>
+      ${sectionBar('已隐藏的环境', {
+        count: state.hidden.length ? `${state.hidden.length} 个` : '',
+        note: '隐藏只影响账号状态页的显示，助手目录与配对信息都会保留。',
+      })}
       ${renderHiddenPanel()}`;
   }
 
@@ -715,6 +814,7 @@
     dialog.addEventListener('close', () => dialog.remove());
     document.body.appendChild(dialog);
     dialog.showModal();
+    dialog.querySelector('.field')?.focus();
   }
 
   async function runWorkspaceAction(action, id) {
@@ -751,36 +851,61 @@
   function renderSettings() {
     const config = state.config?.config;
     if (!config) {
-      $('#page-root').innerHTML = `${intro('PREFERENCES / LOCAL INSTANCE', '运行设置', '管理实例扫描目录、端口范围与 Sandboxie 路径。')}<div class="loading-card"><span class="loader"></span><span>正在读取本机设置…</span></div>`;
+      $('#page-root').innerHTML = `<div class="loading-card"><span class="loader"></span><span>正在读取本机设置…</span></div>`;
       return;
     }
     const ports = config.ports || {};
-    $('#page-root').innerHTML = `${intro('PREFERENCES / LOCAL INSTANCE', '运行设置', '管理实例扫描目录、端口范围与 Sandboxie 路径。', button('rescan', '重新扫描', '', '', 'refresh'))}
-      ${renderWorkspacePanel()}
+    const cap = state.globalFrameCap || {};
+    const capOn = cap.enabled === true;
+    $('#page-root').innerHTML = `<div class="settings-wrap">
+      ${sectionBar('账号环境', {
+        count: `${state.workspaces.length} 个`,
+        note: '每个环境保存独立的助手目录、游戏路径和启动方式。助手更新时按原目录和配对信息查找新版本。',
+        actions: button('rescan', '重新扫描', 'compact', '', 'refresh'),
+      })}
+      ${renderEnvPanel()}
+      ${sectionBar('运行控制', {
+        actions: `<span class="state-pill ${capOn ? 'active' : ''}">${capOn ? `已开启 · ${Number(cap.fps) || 10} 帧` : '已关闭'}</span>`,
+      })}
       ${renderGlobalFrameCapSettings()}
+      ${sectionBar('客户端版本', {
+        actions: updateStatePill(),
+        note: '应用启动时检测一次，运行期间每 12 小时检测一次。',
+      })}
       ${renderUpdatePanel()}
-      <details class="panel"><summary>高级连接设置</summary><section><div class="panel-title"><div><h3>实例发现</h3><p>中控在这些目录查找助手实例与沙盒配置。</p></div><span class="count-tag">发现 ${number(state.config.installs?.length)} 个目录</span></div>
-        <div class="form-grid">
-          <div class="form-field full"><label for="cfg-roots">扫描目录（每行一个）</label><textarea class="textarea" id="cfg-roots">${esc((config.scan_roots || []).join('\n'))}</textarea></div>
-          <div class="form-field"><label>起始控制端口</label><input class="field" id="cfg-port-start" type="number" value="${Number(ports.start || 8766)}"></div>
-          <div class="form-field"><label>端口步长</label><input class="field" id="cfg-port-step" type="number" value="${Number(ports.step || 10)}"></div>
-          <div class="form-field"><label>扫描端口数</label><input class="field" id="cfg-port-count" type="number" value="${Number(ports.count || 24)}"></div>
-          <div class="form-field"><label>连接超时（秒）</label><input class="field" id="cfg-timeout" type="number" min="1" max="60" value="${Number(config.timeout || 4)}"></div>
-          <div class="form-field full"><label for="cfg-sandbox">Sandboxie 安装目录</label><input class="field" id="cfg-sandbox" value="${esc(config.sandboxie_dir || '')}" placeholder="自动检测或填写安装目录"></div>
-          <div class="form-field full"><label class="check-line"><input id="cfg-launch" type="checkbox" ${config.enable_launch !== false ? 'checked' : ''}>允许控制台启动离线助手</label></div>
+      <details class="panel advanced-panel"><summary><span>高级连接设置</span><i>实例发现、扫描结果与配对数据</i></summary>
+        <div class="form-block">
+          <div class="form-block-head"><h4>实例发现</h4><span class="count-tag">发现 ${number(state.config.installs?.length)} 个目录</span></div>
+          <p class="form-hint">中控在这些目录查找助手实例与沙盒配置。</p>
+          <div class="form-grid">
+            <div class="form-field full"><label for="cfg-roots">扫描目录（每行一个）</label><textarea class="textarea" id="cfg-roots">${esc((config.scan_roots || []).join('\n'))}</textarea></div>
+            <div class="form-field"><label>起始控制端口</label><input class="field" id="cfg-port-start" type="number" value="${Number(ports.start || 8766)}"></div>
+            <div class="form-field"><label>端口步长</label><input class="field" id="cfg-port-step" type="number" value="${Number(ports.step || 10)}"></div>
+            <div class="form-field"><label>扫描端口数</label><input class="field" id="cfg-port-count" type="number" value="${Number(ports.count || 24)}"></div>
+            <div class="form-field"><label>连接超时（秒）</label><input class="field" id="cfg-timeout" type="number" min="1" max="60" value="${Number(config.timeout || 4)}"></div>
+            <div class="form-field full"><label for="cfg-sandbox">Sandboxie 安装目录</label><input class="field" id="cfg-sandbox" value="${esc(config.sandboxie_dir || '')}" placeholder="自动检测或填写安装目录"></div>
+            <div class="form-field full"><label class="check-line"><input id="cfg-launch" type="checkbox" ${config.enable_launch !== false ? 'checked' : ''}>允许控制台启动离线助手</label></div>
+          </div>
+          <div class="form-actions"><button class="btn" data-act="rescan">扫描实例</button><button class="btn primary" data-act="settings-save">保存设置</button></div>
         </div>
-        <div class="form-actions"><button class="btn" data-act="rescan">扫描实例</button><button class="btn primary" data-act="settings-save">保存设置</button></div>
-      </section>
-      <div class="section-head"><div><h2>扫描结果</h2><p>配置目录中的助手实例。</p></div></div>
-      <section class="panel">${renderInstallList(state.config.installs || [], state.config.sandboxie)}</section>
-      <div class="section-head"><div><h2>账号备注</h2><p>备注会覆盖卡片上的端口名称。</p></div></div>
-      <section class="panel"><div class="form-field"><label for="cfg-instances">高级配对数据（JSON）</label><textarea class="textarea code" id="cfg-instances">${esc(JSON.stringify(config.instances || {}, null, 2))}</textarea><div class="form-hint">保留端口到账号的现有映射。修改前请确认 JSON 格式正确。</div></div><div class="form-actions"><button class="btn primary" data-act="settings-advanced-save">保存配对数据</button></div></section></details>`;
+        <div class="form-block">
+          <div class="form-block-head"><h4>扫描结果</h4></div>
+          ${renderInstallList(state.config.installs || [], state.config.sandboxie)}
+        </div>
+        <div class="form-block">
+          <div class="form-block-head"><h4>配对数据</h4></div>
+          <p class="form-hint">保留端口到账号的现有映射，备注会覆盖卡片上的端口名称。修改前请确认 JSON 格式正确。</p>
+          <div class="form-field"><textarea class="textarea code" id="cfg-instances" aria-label="高级配对数据">${esc(JSON.stringify(config.instances || {}, null, 2))}</textarea></div>
+          <div class="form-actions"><button class="btn primary" data-act="settings-advanced-save">保存配对数据</button></div>
+        </div>
+      </details>
+    </div>`;
   }
 
   function renderInstallList(installs, sandboxie) {
     const sb = sandboxie ? `<span class="state-pill active">Sandboxie 已找到</span>` : `<span class="state-pill wait">未检测到 Sandboxie</span>`;
     const rows = installs.map((item) => `<tr><td class="mono">${esc(item.control ?? '—')}</td><td>${esc(item.sandbox || '沙盒外')}</td><td>${esc(item.ver || '未知')}</td><td>${esc(item.dir || '—')}</td></tr>`).join('');
-    return `<div class="toolbar"><span class="section-meta">${sb}</span><span class="section-meta">${installs.length} 个助手目录</span></div><div class="data-table-wrap"><table class="data-table"><thead><tr><th>控制端口</th><th>沙盒</th><th>版本</th><th>安装目录</th></tr></thead><tbody>${rows || '<tr><td colspan="4" class="muted-cell">尚未发现助手目录。</td></tr>'}</tbody></table></div>`;
+    return `<div class="table-toolbar"><div class="table-toolbar-filters">${sb}</div><div class="table-toolbar-actions"><span class="count-tag">${installs.length} 个助手目录</span></div></div><div class="data-table-wrap"><table class="data-table"><thead><tr><th>控制端口</th><th>沙盒</th><th>版本</th><th>安装目录</th></tr></thead><tbody>${rows || '<tr><td colspan="4" class="muted-cell">尚未发现助手目录。</td></tr>'}</tbody></table></div>`;
   }
 
   async function loadOverview(force = false) {
@@ -788,8 +913,9 @@
     state.overviewLoading = true;
     const workspaceLoad = loadWorkspaces();
     try {
+      const steamTask = (state.steam && !force) ? Promise.resolve() : fetchSteam();
       const data = await api(`/api/overview${force ? '?force=1' : ''}`);
-      await workspaceLoad;
+      await Promise.all([workspaceLoad, steamTask]);
       state.overview = data;
       state.lastError = '';
       setEngineState(true, `${number(data.summary?.online)} 个助手在线`);
@@ -809,6 +935,10 @@
       if (state.lastError !== error.message) notify(error.message, 'error');
       state.lastError = error.message;
     } finally { state.overviewLoading = false; }
+  }
+
+  function fetchSteam() {
+    return api('/api/steam').then((data) => { state.steam = data; }).catch(() => {});
   }
 
   async function loadSteam() {
@@ -932,6 +1062,10 @@
       }
       if (action === 'open-lineage') {
         navigate('lineage');
+        return;
+      }
+      if (action === 'open-loot') {
+        navigate('loot');
         return;
       }
       if (action === 'auction-refresh') {
@@ -1341,12 +1475,33 @@
     $('#top-time').textContent = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date());
   }
 
+  /* 卡片上的「更多」菜单：常驻三个动词，其余操作收进一层，位置固定在按钮上沿。 */
+  function closeMenus(except = null) {
+    $$('.env-more.open').forEach((node) => {
+      if (node === except) return;
+      node.classList.remove('open');
+      node.querySelector('[data-menu-toggle]')?.setAttribute('aria-expanded', 'false');
+    });
+  }
+
+  function toggleMenu(node) {
+    if (!node) return;
+    const open = !node.classList.contains('open');
+    closeMenus(node);
+    node.classList.toggle('open', open);
+    node.querySelector('[data-menu-toggle]')?.setAttribute('aria-expanded', String(open));
+  }
+
   document.addEventListener('click', async (event) => {
     const nav = event.target.closest('.nav-item');
     if (nav) { navigate(nav.dataset.view); return; }
+    const menuToggle = event.target.closest('[data-menu-toggle]');
+    if (menuToggle) { event.preventDefault(); toggleMenu(menuToggle.closest('.env-more')); return; }
+    if (!event.target.closest('.env-more')) closeMenus();
     const actionButton = event.target.closest('[data-act]');
     if (actionButton) {
       event.preventDefault();
+      if (actionButton.closest('.menu')) closeMenus();
       await runAction(actionButton.dataset.act, actionButton, event);
     }
   });
@@ -1356,6 +1511,7 @@
     requestGlobalFrameCap(state.globalFrameCap.enabled === true, Number(rateSelect.value));
   });
   document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') { closeMenus(); return; }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'r') {
       event.preventDefault(); runAction('refresh');
       return;
