@@ -100,7 +100,10 @@ internal sealed class SandboxRuntime
         uint bytes = 32768, keyBytes = 32768, ipcBytes = 32768;
         if (_queryBoxPath(box, path, key, ipc, ref bytes, ref keyBytes, ref ipcBytes) != 0) return "";
         string raw = path.ToString();
-        if (raw.StartsWith(@"\??\", StringComparison.Ordinal)) return raw[4..];
+        if (raw.StartsWith(@"\??\", StringComparison.Ordinal)) raw = raw[4..];
+        // 盒子路径模板里可能有 %USERNAME%、%SANDBOX% 这类变量（Sandboxie.ini 的 FileRootPath），
+        // 拼真实路径前必须先展开，否则 Directory.Exists / File.Exists 全部落空。
+        raw = Environment.ExpandEnvironmentVariables(raw);
         foreach (string drive in Environment.GetLogicalDrives())
         {
             var target = new StringBuilder(1024);

@@ -748,6 +748,42 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 }
 .footer-keys i { color: var(--line-strong); font-style: normal; }
 
+/* ── 掉落行的品质色（整行） ─────────────────────────── */
+/* 品质只体现在文字颜色上：类别与品质不再套背景框，整行不会出现两种色块。 */
+.data-table tbody tr.loot-row td { font-weight: 550; }
+.data-table tbody tr.loot-row td.mono { opacity: .78; }
+.data-table tbody tr.loot-row .loot-name { font-weight: 650; }
+.data-table tbody tr.loot-row .loot-sub { margin-top: 2px; font-size: 11px; font-weight: 500; opacity: .7; }
+.data-table tbody tr.loot-row.q-none td { color: var(--ink-2); }
+.data-table tbody tr.loot-row.q-common td { color: var(--q-common); }
+.data-table tbody tr.loot-row.q-uncommon td { color: var(--q-uncommon); }
+.data-table tbody tr.loot-row.q-rare td { color: var(--q-rare); }
+.data-table tbody tr.loot-row.q-legendary td { color: var(--q-legendary); }
+.data-table tbody tr.loot-row.q-divine td { color: var(--q-divine); }
+.data-table tbody tr.loot-row.q-runeset td { color: var(--q-runeset); }
+.data-table tbody tr.loot-row.q-black-mist td { color: var(--q-black); }
+/* 掉落表原本靠标签区分品质，现在整行同色，行距与字重负责层级 */
+.drops-table td, .data-table-loot td { line-height: 1.55; }
+
+/* ── 账号卡片：锁帧与设置入口 ───────────────────────── */
+.env-actions { flex-wrap: wrap; }
+.env-actions .btn { flex: 1 1 calc(33.333% - 8px); min-width: 84px; }
+.env-actions .lock-button { font-variant-numeric: tabular-nums; }
+.env-actions .lock-button.is-locked { font-weight: 650; }
+.env-actions .env-more { flex: 0 0 auto; }
+
+.helper-card.is-focus { border-color: var(--accent-line); box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow-md); }
+
+/* ── 一键部署 ───────────────────────────────────────── */
+.deploy-panel { margin-bottom: 4px; }
+.deploy-message { margin-top: 10px; color: var(--ink-2); }
+.deploy-candidates { margin-top: 14px; }
+.deploy-candidates .data-table-wrap { border: 1px solid var(--line); }
+.deploy-candidates .data-table { min-width: 640px; }
+.deploy-steps { margin-top: 14px; }
+.tag.ok { color: var(--q-runeset); background: #ecf8f0; border-color: #cfe9d8; }
+.update-note { margin: 10px 0 12px; }
+
 /* ── 自适应 ─────────────────────────────────────────── */
 @media (max-width: 1090px) {
   .stat-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }

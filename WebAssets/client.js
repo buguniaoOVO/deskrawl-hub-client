@@ -3,7 +3,9 @@
 
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
-  const APP_VERSION = '1.2';
+  const APP_VERSION = '1.3';
+  // 检测更新改用内置仓库，界面上不再出现仓库地址。
+  const DEFAULT_REPOSITORY = 'https://github.com/buguniaoOVO/deskrawl-hub-client';
   const state = {
     view: 'overview', overview: null, steam: null, config: null,
     gameWindows: {}, timer: 0, busy: new Set(), lastError: '',
@@ -14,8 +16,11 @@
     lootFilters: { query: '', account: '', period: 'all' },
     auctionSettings: { enabled: false, intervalMinutes: 60, lastRunUtc: 0 },
     updateSettings: { repositoryUrl: '', enabled: true, ignoredVersion: '', lastCheckedUtc: 0 },
-    updateStatus: { kind: 'waiting', message: 'GitHub 地址待配置。' },
+    updateStatus: { kind: 'waiting', message: '尚未检测更新。' },
     globalFrameCap: { enabled: false, fps: 10 }, frameCapStatuses: {},
+    // 按账号锁帧：settings.accounts 里是显式设置的账号（"host" / "box:<沙盘名>"）。
+    frameCapAccounts: {}, focusWorkspace: '',
+    deploy: { target: '', packagePath: '', port: '', busy: '', candidates: [], steps: [], message: '', result: null },
     wikiEquipment: { byId: new Map(), byEnglish: new Map(), byChinese: new Map(), count: 0 },
   };
   const viewNames = {
@@ -47,11 +52,11 @@
   });
   const hostRequests = new Map();
   let hostSequence = 0;
-  function hostRequest(action, data = {}) {
+  function hostRequest(action, data = {}, timeoutMs = 90000) {
     if (!window.chrome?.webview) return Promise.reject(new Error('此功能需要在桌面客户端中使用。'));
     return new Promise((resolve, reject) => {
       const requestId = String(++hostSequence);
-      const timeout = setTimeout(() => { hostRequests.delete(requestId); reject(new Error('操作等待超时，请刷新状态后确认。')); }, 90000);
+      const timeout = setTimeout(() => { hostRequests.delete(requestId); reject(new Error('操作等待超时，请刷新状态后确认。')); }, timeoutMs);
       hostRequests.set(requestId, { resolve, reject, timeout });
       window.chrome.webview.postMessage({ type: 'workspace-request', requestId, action, ...data });
     });
@@ -207,12 +212,13 @@
     }
     return 0;
   };
+  // 仓库地址只作为内部数据：界面上既没有输入框，也不显示 owner/repo。
+  const updateRepository = () => githubRepository(state.updateSettings.repositoryUrl || DEFAULT_REPOSITORY);
   function updateGithubButton() {
     const node = $('#github-button');
     if (!node) return;
-    const repo = githubRepository(state.updateSettings.repositoryUrl);
-    node.disabled = !repo;
-    node.title = repo ? `打开 ${repo.owner}/${repo.repo} GitHub 项目页` : 'GitHub 项目地址待配置';
+    node.hidden = true;
+    node.disabled = true;
   }
   async function loadWikiEquipment() {
     try {
@@ -257,6 +263,7 @@
 
   function navigate(view) {
     if (!viewNames[view]) return;
+    if (view !== 'helpers') state.focusWorkspace = '';
     state.view = view;
     $$('.nav-item').forEach((button) => button.classList.toggle('active', button.dataset.view === view));
     $('#page-title').textContent = viewNames[view];
@@ -304,22 +311,24 @@
     return `<span class="state-pill ${status.kind === 'available' ? 'active' : status.kind === 'error' ? 'wait' : ''}">${label}</span>`;
   }
 
+  /* 检测更新不再显示仓库地址：只留版本号、检测结果与检测时间。 */
   function renderUpdatePanel() {
     const settings = state.updateSettings || {};
     const status = state.updateStatus || {};
-    const repo = githubRepository(settings.repositoryUrl);
+    const checked = Number(settings.lastCheckedUtc || 0);
+    const checkedText = checked ? `上次检测 ${when(checked, true)}` : '尚未检测';
+    const releaseNote = status.kind === 'available'
+      ? '发现新版本：下载新版程序覆盖当前 exe 后重新打开即可。'
+      : (status.kind === 'error' ? '暂时读不到版本信息，稍后再试或检查网络。' : '启动时检测一次，运行期间每 12 小时检测一次。');
     return `<section class="panel">
-      <div class="form-grid">
-        <div class="form-field full"><label for="update-repo-url">GitHub 仓库地址</label><input class="field" id="update-repo-url" type="url" value="${esc(settings.repositoryUrl || '')}" placeholder="项目上传后填写 GitHub 项目页"><div class="form-hint">上传项目并创建 Release 后，填写仓库主页或 Releases 地址即可启用检测。</div></div>
-        <div class="form-field full"><label class="check-line"><input id="update-enabled" type="checkbox" ${settings.enabled !== false ? 'checked' : ''}>启动时自动检测，并每 12 小时检查一次</label></div>
-      </div>
       <div class="update-status ${status.kind === 'available' ? 'available' : status.kind === 'error' ? 'error' : ''}">
-        <span>${esc(status.message || '等待 GitHub 项目地址。')}</span>
-        <span>当前版本 <b>v${APP_VERSION}</b>${status.latestVersion ? ` · 最新版本 <b class="update-version">${esc(status.latestVersion)}</b>` : ''}</span>
-        ${status.releaseUrl ? `<a class="btn compact" href="${esc(status.releaseUrl)}" target="_blank" rel="noopener">查看发布页</a>` : ''}
+        <span>${esc(status.message || '尚未检测更新。')}</span>
+        <span>当前版本 <b>v${APP_VERSION}</b>${status.latestVersion ? ` · 最新版本 <b class="update-version">${esc(status.latestVersion)}</b>` : ''} · ${esc(checkedText)}</span>
       </div>
+      <p class="form-hint update-note">${esc(releaseNote)}</p>
+      <div class="form-field full"><label class="check-line"><input id="update-enabled" type="checkbox" ${settings.enabled !== false ? 'checked' : ''}>启动时自动检测，并每 12 小时检查一次</label></div>
       <div class="form-actions">
-        <button class="btn" data-act="update-check" ${repo ? '' : 'disabled'}>${icon('refresh')}立即检测</button>
+        <button class="btn" data-act="update-check">${icon('refresh')}立即检测</button>
         <button class="btn" data-act="update-ignore" ${status.kind === 'available' ? '' : 'hidden'}>不再提醒此版本</button>
         <button class="btn primary" data-act="update-settings-save">保存检测设置</button>
       </div>
@@ -333,7 +342,7 @@
         <label for="global-frame-cap-rate">全局帧率上限</label>
         <div class="field-row">
           <select class="select" id="global-frame-cap-rate" data-act="global-frame-cap-rate"><option value="10" ${Number(setting.fps) === 30 ? '' : 'selected'}>10 帧</option><option value="30" ${Number(setting.fps) === 30 ? 'selected' : ''}>30 帧</option></select>
-          <p class="form-hint">挡位变更会即时应用；关闭状态下只保存挡位。账号状态页的开关会统一应用到当前和后续启动的游戏。</p>
+          <p class="form-hint">挡位变更会即时应用；关闭状态下只保存挡位。「全局开关」是总控：开启会清掉各账号的单独设置并统一挡位，关闭会把所有账号解除锁定。想让某个账号用自己的挡位，到账号卡片的「锁帧」按钮或卡片「⋯」菜单里单独设。</p>
         </div>
       </div>
     </section>`;
@@ -364,14 +373,14 @@
     ${state.workspaceError ? `<div class="callout danger">环境读取失败：${esc(state.workspaceError)}</div>` : ''}
     ${sectionBar('环境', {
       count: `${instances.length} 个`,
-      note: capEnabled ? esc(globalFrameCapSummary()) : '',
+      note: esc(frameCapLockSummary()),
       actions: `<button class="btn compact" data-act="window-toggle-all" title="${allWindowsHidden ? '显示全部游戏窗口' : '隐藏全部游戏窗口'}" ${runningGames.length ? '' : 'disabled'}>${icon(allWindowsHidden ? 'eye' : 'eye-off')}${allWindowsHidden ? '显示全部窗口' : '隐藏全部窗口'}</button>
         <button class="btn compact ${capEnabled ? 'danger' : ''}" data-act="global-frame-cap-toggle" aria-pressed="${capEnabled}" title="全局锁帧 ${capEnabled ? '已开启' : '已关闭'}">${icon(capEnabled ? 'stop' : 'spark')}${capEnabled ? `关闭全局锁帧 · ${Number(state.globalFrameCap.fps) || 10} 帧` : '开启全局锁帧'}</button>`,
     })}
     <section class="env-grid">${instances.length ? instances.map(renderAccount).join('') : empty('box', '没有发现账号', '到运行设置中检查扫描目录与端口范围。')}</section>
     ${renderRecentDrops()}`;
     $('#side-port').textContent = data.ports?.length ? `${data.ports[0]}—${data.ports[data.ports.length - 1]}` : '—';
-    $('#side-version').textContent = data.versions?.hub ? `v${data.versions.hub}` : '本地';
+    $('#side-version').textContent = `v${APP_VERSION}`;
     setEngineState(true, `${number(summary.online ?? online)} 个助手在线`);
   }
 
@@ -381,12 +390,12 @@
     if (!rows.length) return '';
     const body = rows.map((row) => {
       const cls = rarityClass(row);
-      return `<tr>
+      return `<tr class="loot-row ${cls ? `q-${cls}` : 'q-none'}">
         <td class="mono">${esc(when(row.t, true))}</td>
         <td>${esc(row.account || `端口 ${row.port || '—'}`)}</td>
-        <td><span class="strong-cell ${cls ? `rarity-${cls}` : ''}">${esc(displayItemName(row))}</span></td>
-        <td><span class="rarity-tag ${cls}">${esc(rarityName(row))}</span></td>
-        <td class="muted-cell">${esc([row.map_name, row.boss].filter(Boolean).join(' / ') || '—')}</td>
+        <td class="loot-name">${esc(displayItemName(row))}</td>
+        <td class="loot-quality">${esc(rarityName(row))}</td>
+        <td class="loot-place">${esc([row.map_name, row.boss].filter(Boolean).join(' / ') || '—')}</td>
       </tr>`;
     }).join('');
     return `${sectionBar('近期掉落', {
@@ -398,18 +407,186 @@
     </section>`;
   }
 
-  function globalFrameCapSummary() {
-    const settings = state.globalFrameCap;
-    if (settings.enabled !== true) return '全局锁帧已关闭。';
-    const statuses = Object.values(state.frameCapStatuses).filter((status) => Number(status.processId) > 0);
-    if (!statuses.length) return `全局锁帧已开启，${Number(settings.fps) || 10} 帧；游戏启动后应用。`;
-    const blocked = statuses.filter((status) => status.state === 'restart-required');
-    if (blocked.length) return `全局锁帧已开启；${blocked.length} 个游戏需重启后应用。`;
-    const failed = statuses.find((status) => !status.applied && status.state !== 'waiting');
-    if (failed) return `全局锁帧未能应用：${failed.message || '请检查游戏状态。'}`;
-    const applied = statuses.filter((status) => status.applied).length;
-    const waiting = statuses.length - applied;
-    return `全局锁帧 ${Number(settings.fps) || 10} 帧；${applied}/${statuses.length} 个游戏已确认${waiting ? `，${waiting} 个等待游戏就绪` : ''}。`;
+  /*
+   * 锁帧总览：只讲「实际生效」的三件事——全局挡位、与全局不同的账号覆盖、游戏上的应用进度。
+   * 与全局同挡的账号覆盖属于无操作，不再单独念一遍（旧版会念成「已按账号锁定 1 个」）；
+   * 已经不需要锁的端口（fps 0，例如全局关闭且没单独设置）也不计入分母，避免把「未锁」算成「等待」。
+   */
+  function frameCapLockSummary() {
+    const settings = state.globalFrameCap || {};
+    const globalOn = settings.enabled === true;
+    const globalFps = Number(settings.fps) === 30 ? 30 : 10;
+    const overrides = Object.entries(state.frameCapAccounts || {})
+      .map(([id, value]) => ({ id, enabled: value?.enabled === true, fps: Number(value?.fps) === 30 ? 30 : 10 }));
+    // 与全局完全一致的覆盖不产生任何差异，界面上不提。
+    const meaningful = overrides.filter((item) => item.enabled !== globalOn || (item.enabled && item.fps !== globalFps));
+    const statuses = Object.values(state.frameCapStatuses).filter((status) => Number(status.fps) > 0);
+    const parts = [globalOn ? `全局 ${globalFps} 帧` : '全局锁帧关闭'];
+    if (meaningful.length) {
+      const rates = [...new Set(meaningful.filter((item) => item.enabled).map((item) => item.fps))].sort((a, b) => a - b);
+      const off = meaningful.filter((item) => !item.enabled).length;
+      const pieces = [];
+      if (rates.length) pieces.push(`单独锁定 ${rates.map((fps) => `${fps} 帧`).join(' / ')}${rates.length > 1 ? '（挡位不一致）' : ''}`);
+      if (off) pieces.push(`${off} 个账号单独关闭`);
+      parts.push(pieces.join('，'));
+    }
+    if (!globalOn && !meaningful.length) parts[0] = '全局锁帧关闭，也没有账号单独锁定';
+    if (!statuses.length) {
+      if (globalOn || meaningful.length) parts.push('游戏启动后应用');
+    } else {
+      const applied = statuses.filter((status) => status.applied).length;
+      const unconfirmed = statuses.filter((status) => !status.applied && status.state === 'unconfirmed').length;
+      const waiting = statuses.filter((status) => !status.applied && status.state === 'waiting').length;
+      const blocked = statuses.filter((status) => status.state === 'restart-required').length;
+      const failed = statuses.find((status) => !status.applied && !['waiting', 'unconfirmed', 'restart-required'].includes(String(status.state || '')));
+      // 三种未确认要分开说：已下发等回执 ≠ 游戏还没起来 ≠ 需要重启游戏。
+      parts.push(`${applied}/${statuses.length} 个游戏已确认`
+        + (unconfirmed ? `，${unconfirmed} 个已下发、等游戏回执` : '')
+        + (waiting ? `，${waiting} 个等待游戏就绪` : '')
+        + (blocked ? `，${blocked} 个需重启游戏` : ''));
+      if (failed) parts.push(`未能应用：${failed.message || '请检查游戏状态'}`);
+    }
+    return parts.join(' · ') + '。';
+  }
+
+
+  /* 按账号锁帧：显式设置优先，没有单独设置的账号沿用全局挡位。 */
+  function accountFrameCap(account) {
+    const id = account?.workspace?.id || '';
+    const own = id ? state.frameCapAccounts?.[id] : null;
+    const global = state.globalFrameCap || { enabled: false, fps: 10 };
+    const source = own || { enabled: global.enabled === true, fps: Number(global.fps) === 30 ? 30 : 10 };
+    return { id, enabled: source.enabled === true, fps: Number(source.fps) === 30 ? 30 : 10, own: !!own };
+  }
+
+  function lockedFrameCapAccounts() {
+    return Object.entries(state.frameCapAccounts || {})
+      .map(([id, value]) => ({ id, enabled: value?.enabled === true, fps: Number(value?.fps) === 30 ? 30 : 10 }))
+      .filter((item) => item.enabled);
+  }
+
+  /* 卡片上的锁帧入口：锁定状态常驻可见，而不是点一下闪一下。 */
+  function frameCapLockButton(account, extra) {
+    const cap = accountFrameCap(account);
+    const available = !!account?.workspace;
+    const label = cap.enabled ? `锁帧 ${cap.fps}` : '锁帧';
+    const globalOn = state.globalFrameCap?.enabled === true;
+    const title = !available
+      ? '这个账号的助手未连接，先在环境里启动助手再锁帧'
+      : cap.enabled
+        ? `该账号已锁定 ${cap.fps} 帧（${cap.own ? '单独设置' : '沿用全局挡位'}），点击把这个账号单独关掉`
+        : (cap.own && globalOn
+          ? '这个账号已被单独关闭，点击恢复锁定'
+          : `把这个账号锁定到 ${cap.fps} 帧${cap.own ? '' : '（挡位跟随全局，可在「⋯」里单独改）'}`);
+    return `<button class="btn compact lock-button ${cap.enabled ? 'is-locked danger' : 'soft'}" data-act="account-frame-cap-toggle" ${extra} ${available ? '' : 'disabled'} title="${esc(title)}" aria-pressed="${cap.enabled}">${icon(cap.enabled ? 'stop' : 'clock')}${esc(label)}</button>`;
+  }
+
+/* ── 一键部署：目标环境 → 下载/落位 → 配对 → 启动 → 端口确认 ───────── */
+  function deployTargets() {
+    const rows = [{ id: 'host', name: '主机（本机直跑）', sandbox: '' }];
+    for (const row of state.workspaces) {
+      if (row.id === 'host') continue;
+      rows.push({ id: row.id, name: row.name, sandbox: row.sandbox });
+    }
+    return rows;
+  }
+
+  function deploySandboxOf(targetId) {
+    if (!targetId || targetId === 'host') return '';
+    return state.workspaces.find((row) => row.id === targetId)?.sandbox ?? '';
+  }
+
+  function renderPortCandidates(candidates) {
+    const rows = candidates.map((item) => {
+      const probe = item?.probe || {};
+      const evidence = (item?.evidence || []).join(' · ') || '—';
+      const sandbox = item?.sandbox ? item.sandbox : '主机';
+      return `<tr>
+        <td class="mono">${item?.port ?? '—'}</td>
+        <td>${esc(sandbox)}</td>
+        <td class="mono">${item?.processId ? `PID ${item.processId}` : '—'}</td>
+        <td>${probe.ok ? `<span class="tag ok">${esc(probe.version || '可用')}</span>` : '<span class="tag muted">未确认</span>'}</td>
+        <td class="muted-cell">${esc(evidence)}</td>
+        <td><button class="btn compact" data-act="deploy-use-port" data-port="${item?.port ?? ''}">用这个端口</button></td>
+      </tr>`;
+    }).join('');
+    return `<div class="deploy-candidates">
+      <div class="form-block-head"><h4>候选端口</h4><span class="count-tag">${candidates.length} 个</span></div>
+      <div class="data-table-wrap"><table class="data-table"><thead><tr><th>控制端口</th><th>归属</th><th>进程</th><th>探测</th><th>判定依据</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="muted-cell">没有发现正在监听的助手端口。</td></tr>'}</tbody></table></div>
+    </div>`;
+  }
+
+  function renderDeploySteps(steps) {
+    return `<ol class="update-steps deploy-steps">${steps.map((step) => `<li class="update-step" data-state="${esc(step.state || 'wait')}">
+      <span class="step-dot"></span><div><strong>${esc(step.title || step.id || '步骤')}</strong><span class="step-note">${esc(step.detail || '')}</span></div>
+    </li>`).join('')}</ol>`;
+  }
+
+  function renderDeployPanel() {
+    const deploy = state.deploy;
+    const targets = deployTargets();
+    if (!deploy.target || !targets.some((item) => item.id === deploy.target)) deploy.target = targets[0]?.id || 'host';
+    const options = targets.map((item) => `<option value="${esc(item.id)}" ${deploy.target === item.id ? 'selected' : ''}>${esc(item.name)}</option>`).join('');
+    const running = deploy.busy === 'deploy';
+    return `${sectionBar('一键部署助手', {
+      count: '',
+      note: '从官网下载最新助手包，装入目标环境、写入配对信息并确认控制端口；每一步失败都会停在出错的位置并说明原因。',
+    })}
+    <section class="panel deploy-panel">
+      <div class="form-grid">
+        <div class="form-field"><label for="deploy-target">目标环境</label><select class="select" id="deploy-target" ${running ? 'disabled' : ''}>${options}</select><div class="form-hint">主机直接在本机运行；沙箱要求 Sandboxie 中已存在该沙盘。</div></div>
+        <div class="form-field"><label for="deploy-port">控制端口（留空自动识别）</label><input class="field" id="deploy-port" type="number" min="1" max="65535" value="${esc(deploy.port)}" placeholder="自动识别" ${running ? 'disabled' : ''}><div class="form-hint">识别到多个候选或识别失败时，在这里指定。</div></div>
+        <div class="form-field full"><label for="deploy-package">本地安装包（可选）</label><input class="field" id="deploy-package" value="${esc(deploy.packagePath)}" placeholder="留空则从官网下载最新版本；也可填本地 zip 路径" ${running ? 'disabled' : ''}></div>
+      </div>
+      <div class="form-actions">
+        <button class="btn" data-act="detect-ports" ${running ? 'disabled' : ''}>${icon('search')}识别端口</button>
+        <button class="btn primary" data-act="deploy-helper" ${running ? 'disabled' : ''}>${icon('download')}${running ? '正在部署…' : '一键部署'}</button>
+      </div>
+      ${deploy.message ? `<p class="form-hint deploy-message">${esc(deploy.message)}</p>` : ''}
+      ${deploy.candidates.length ? renderPortCandidates(deploy.candidates) : ''}
+      ${deploy.steps.length ? renderDeploySteps(deploy.steps) : ''}
+    </section>`;
+  }
+
+  async function runDetectPorts() {
+    const target = $('#deploy-target')?.value || state.deploy.target || 'host';
+    const sandbox = deploySandboxOf(target);
+    state.deploy = { ...state.deploy, target, busy: 'detect', message: '正在读取监听端口并探测助手接口…', candidates: [] };
+    renderHelpers();
+    try {
+      const result = await hostRequest('detect-ports', { sandbox }, 60000);
+      const candidates = Array.isArray(result?.candidates) ? result.candidates : [];
+      state.deploy = { ...state.deploy, busy: '', candidates,
+        message: candidates.length
+          ? `识别到 ${candidates.length} 个候选端口${result?.suggestion?.port ? `，建议使用 ${result.suggestion.port}` : ''}。`
+          : '没有识别到正在监听的助手端口；可以手动填写端口后直接部署。' };
+    } catch (error) {
+      state.deploy = { ...state.deploy, busy: '', message: `端口识别失败：${error.message}` };
+    }
+    renderHelpers();
+  }
+
+  async function runDeploy() {
+    const target = $('#deploy-target')?.value || state.deploy.target || 'host';
+    const sandbox = deploySandboxOf(target);
+    const port = Number($('#deploy-port')?.value || 0);
+    const packagePath = ($('#deploy-package')?.value || '').trim();
+    state.deploy = { ...state.deploy, target, port: port ? String(port) : '', packagePath, busy: 'deploy', steps: [], candidates: state.deploy.candidates, message: '正在准备部署…' };
+    renderHelpers();
+    try {
+      const result = await hostRequest('deploy-helper', { sandbox, port, packagePath }, 20 * 60 * 1000);
+      state.deploy = { ...state.deploy, busy: '', steps: result?.steps || [],
+        message: result?.message || (result?.ok ? '部署完成。' : '部署没有完成，请看上面的步骤。') };
+      notify(state.deploy.message, result?.ok ? '' : 'error');
+      // 部署成功后把该账号标亮，让用户直接看到它在哪个环境里。
+      if (result?.ok && result?.accountId) state.focusWorkspace = result.accountId;
+      await loadWorkspaces(true);
+      await loadOverview(true);
+    } catch (error) {
+      state.deploy = { ...state.deploy, busy: '', message: `部署中断：${error.message}` };
+      notify(state.deploy.message, 'error');
+    }
+    renderCurrent();
   }
 
   /* 卡片的次级操作收进「更多」菜单：常驻的只有自动、游戏、窗口三个动词。 */
@@ -424,12 +601,17 @@
     const updateAct = update.state === 'available' ? 'update' : 'check-update';
     const wsAttr = workspace ? `data-workspace="${esc(workspace.id)}"` : '';
     const running = !!workspace?.helperRunning;
+    const cap = accountFrameCap({ workspace });
     return `<div class="env-more">
       <button class="btn icon-only" data-menu-toggle aria-haspopup="menu" aria-expanded="false" title="更多操作" aria-label="更多操作">${icon('chevron')}</button>
       <div class="menu" role="menu">
         <button class="menu-item" role="menuitem" data-act="${updateAct}" data-port="${port}" data-version="${esc(update.version || '')}" ${busy ? 'disabled' : ''}>
           ${icon('download')}<span><b>${updateLabel}</b><i>${paired ? '停自动 → 关游戏 → 安装 → 回游戏' : '按当前助手版本检查'}</i></span></button>
         <button class="menu-item" role="menuitem" data-act="host" data-port="${port}">${icon('box')}<span><b>部署游戏内助手</b><i>向该实例提交安装请求</i></span></button>
+        <div class="menu-sep" role="separator"></div>
+        <button class="menu-item" role="menuitem" data-act="account-frame-cap-rate" ${wsAttr} data-port="${port}" data-fps="10" ${workspace ? '' : 'disabled'}>${icon('clock')}<span><b>锁定为 10 帧</b><i>${cap.enabled && cap.fps === 10 ? '当前挡位' : '只作用于这个账号'}</i></span></button>
+        <button class="menu-item" role="menuitem" data-act="account-frame-cap-rate" ${wsAttr} data-port="${port}" data-fps="30" ${workspace ? '' : 'disabled'}>${icon('clock')}<span><b>锁定为 30 帧</b><i>${cap.enabled && cap.fps === 30 ? '当前挡位' : '只作用于这个账号'}</i></span></button>
+        <button class="menu-item" role="menuitem" data-act="account-frame-cap-off" ${wsAttr} data-port="${port}" ${cap.enabled ? '' : 'disabled'}>${icon('stop')}<span><b>解除此账号锁帧</b><i>${cap.enabled ? '恢复为未锁定' : '当前未锁定'}</i></span></button>
         <div class="menu-sep" role="separator"></div>
         <button class="menu-item" role="menuitem" data-act="workspace-helper" ${wsAttr} data-port="${port}" ${running ? '' : 'disabled'}>${icon('settings')}<span><b>打开助手页面</b><i>内嵌 X1X 设置页</i></span></button>
         <button class="menu-item" role="menuitem" data-act="workspace-launch-helper" ${wsAttr} data-port="${port}" ${!running && workspace?.helperDirectory ? '' : 'disabled'}>${icon('play')}<span><b>启动助手</b><i>该环境的 X1X 进程</i></span></button>
@@ -476,7 +658,7 @@
         <div class="env-id">
           <div class="env-name-row">
             <h3 class="env-name">${esc(account.label || `实例 ${port}`)}</h3>
-            ${workspace ? `<button class="env-icon" data-act="workspace-config" ${workspaceAttr} title="环境设置" aria-label="环境设置">${icon('settings')}</button>` : ''}
+            ${workspace ? `<button class="env-icon" data-act="workspace-settings" ${workspaceAttr} title="助手设置" aria-label="助手设置">${icon('settings')}</button>` : ''}
             ${workspace ? `<button class="env-icon env-remove" data-act="hide-account" ${workspaceAttr} title="从账号状态页移除（配置保留，可在助手设置恢复）" aria-label="移除环境">${icon('close')}</button>` : ''}
           </div>
           <div class="env-meta">
@@ -500,11 +682,15 @@
         ${button(running ? 'auto-off' : 'auto-on', running ? '停止自动' : '开启自动', running ? 'danger' : 'soft', portAttr, running ? 'stop' : 'play')}
         ${button(gameOn ? 'game-close' : (workspace ? 'workspace-launch-game' : 'game-open'), gameOn ? '关闭游戏' : '启动游戏', gameOn ? '' : 'soft', `${portAttr} ${workspaceAttr}`, 'game')}
         ${button(hidden ? 'window-show' : 'window-hide', hidden ? '显示窗口' : '隐藏窗口', '', `${portAttr} ${gameOn ? '' : 'disabled'}`, hidden ? 'eye' : 'eye-off')}
+        ${frameCapLockButton(account, `${portAttr} ${workspaceAttr}`)}
+        ${workspace ? button('workspace-settings', '设置', 'compact', workspaceAttr, 'settings') : ''}
         ${envMenu(port, workspace, update, paired)}
       </div>` : `<div class="env-notice">${esc(workspace?.notice || account.error || '助手当前未连接；游戏与助手可分别启动。')}</div>
       <div class="env-actions">
         ${workspace ? button('workspace-launch-helper', workspace.helperRunning ? '助手已运行' : '启动助手', workspace.helperRunning ? '' : 'soft', `${workspaceAttr} ${workspace.helperRunning || !workspace.helperDirectory ? 'disabled' : ''}`, 'play') : ''}
         ${button(gameOn ? 'game-close' : (workspace ? 'workspace-launch-game' : 'game-open'), gameOn ? '游戏已运行' : '启动游戏', gameOn ? '' : 'soft', `${portAttr} ${workspaceAttr} ${gameOn ? 'disabled' : ''}`, 'game')}
+        ${frameCapLockButton(account, `${portAttr} ${workspaceAttr}`)}
+        ${workspace ? button('workspace-settings', '设置', 'compact', workspaceAttr, 'settings') : ''}
         ${envMenu(port, workspace, update, paired)}
       </div>`}
     </article>`;
@@ -578,15 +764,17 @@
       return true;
     }).slice(0, 500);
     $('#loot-count').textContent = `${number(rows.length)} 条`;
+    // 品质色作用在整行上：物品名称、类别、品质、来源都跟随同一品质色，
+    // 类别与品质因此不再需要背景框，靠颜色与字重区分层级。
     $('#loot-body').innerHTML = rows.length ? rows.map((row) => {
       const cls = rarityClass(row);
       const type = itemKindName(row);
       const flags = [row.ancient ? '远古' : '', isBlackMist(row) && rarityName(row) !== '黑雾' ? '黑雾' : ''].filter(Boolean).join(' · ');
-      return `<tr><td class="mono">${esc(when(row.t, true))}</td><td>${esc(row.account || `端口 ${row.port || '—'}`)}</td>
-        <td><span class="strong-cell ${cls ? `rarity-${cls}` : ''}">${esc(displayItemName(row))}</span>${row.name_en ? `<div class="muted-cell">${esc(row.name_en)}</div>` : ''}</td>
-        <td><span class="rarity-tag">${esc(type)}</span></td><td><span class="rarity-tag ${cls}">${esc(rarityName(row))}${flags ? ` · ${esc(flags)}` : ''}</span></td>
-        <td>${esc(sourceName(row.src))}${row.how ? ` · ${esc(row.how === 'auto' ? '自动' : '手动')}` : ''}</td>
-        <td>${esc([row.map_name, row.boss].filter(Boolean).join(' / ') || '—')}</td></tr>`;
+      return `<tr class="loot-row ${cls ? `q-${cls}` : 'q-none'}"><td class="mono">${esc(when(row.t, true))}</td><td>${esc(row.account || `端口 ${row.port || '—'}`)}</td>
+        <td class="loot-name">${esc(displayItemName(row))}${row.name_en ? `<div class="loot-sub">${esc(row.name_en)}</div>` : ''}</td>
+        <td class="loot-kind">${esc(type)}</td><td class="loot-quality">${esc(rarityName(row))}${flags ? ` · ${esc(flags)}` : ''}</td>
+        <td class="loot-source">${esc(sourceName(row.src))}${row.how ? ` · ${esc(row.how === 'auto' ? '自动' : '手动')}` : ''}</td>
+        <td class="loot-place">${esc([row.map_name, row.boss].filter(Boolean).join(' / ') || '—')}</td></tr>`;
     }).join('') : `<tr><td colspan="7" class="muted-cell">没有符合条件的记录。</td></tr>`;
   }
 
@@ -773,12 +961,14 @@
 
   function renderHelpers() {
     if (state.view !== 'helpers') return;
-    $('#page-root').innerHTML = `${sectionBar('助手环境', {
+    const focus = state.focusWorkspace;
+    $('#page-root').innerHTML = `${state.workspaceError ? `<div class="callout danger">${esc(state.workspaceError)}</div>` : ''}
+      ${renderDeployPanel()}
+      ${sectionBar('助手环境', {
       count: `${state.workspaces.length} 个`,
       note: '内嵌页面由 X1X 官网提供，需要联网；「浏览器打开」会重新携带该助手的配对信息。',
     })}
-      ${state.workspaceError ? `<div class="callout danger">${esc(state.workspaceError)}</div>` : ''}
-      <section class="helper-grid">${state.workspaces.map((row) => `<article class="panel helper-card">
+      <section class="helper-grid">${state.workspaces.map((row) => `<article class="panel helper-card ${focus === row.id ? 'is-focus' : ''}" data-workspace="${esc(row.id)}">
         <div class="helper-head">
           <div class="helper-id"><h3>${esc(row.name)}</h3><p class="workspace-path">${esc(row.helperDirectory || '请先选择助手目录')}</p></div>
           <span class="state-pill ${row.helperRunning ? 'active' : 'wait'}">${row.helperRunning ? '助手运行中' : '助手未启动'}</span>
@@ -796,6 +986,10 @@
         note: '隐藏只影响账号状态页的显示，助手目录与配对信息都会保留。',
       })}
       ${renderHiddenPanel()}`;
+    if (focus) {
+      const node = `#page-root .helper-card[data-workspace="${focus.replace(/"/g, '\\"')}"]`;
+      document.querySelector(node)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
   }
 
   function showWorkspaceConfig(id) {
@@ -819,6 +1013,13 @@
 
   async function runWorkspaceAction(action, id) {
     if (action === 'workspace-config') { showWorkspaceConfig(id); return; }
+    if (action === 'workspace-settings') {
+      state.focusWorkspace = id;
+      navigate('helpers');
+      const name = state.workspaces.find((row) => row.id === id)?.name || '该环境';
+      notify(`已进入「${name}」的助手设置。`);
+      return;
+    }
     if (action === 'workspace-browse-helper' || action === 'workspace-browse-game') {
       const helper = action === 'workspace-browse-helper';
       const result = await hostRequest(helper ? 'browse-helper' : 'browse-game', { id });
@@ -865,7 +1066,7 @@
       })}
       ${renderEnvPanel()}
       ${sectionBar('运行控制', {
-        actions: `<span class="state-pill ${capOn ? 'active' : ''}">${capOn ? `已开启 · ${Number(cap.fps) || 10} 帧` : '已关闭'}</span>`,
+        actions: `<span class="state-pill ${capOn ? 'active' : ''}">${capOn ? `已开启 · ${Number(cap.fps) || 10} 帧` : '已关闭'}</span>${lockedFrameCapAccounts().length ? `<span class="state-pill">按账号锁定 ${lockedFrameCapAccounts().length} 个</span>` : ''}`,
       })}
       ${renderGlobalFrameCapSettings()}
       ${sectionBar('客户端版本', {
@@ -1023,7 +1224,7 @@
         return;
       }
       if (action === 'github-open') {
-        const repo = githubRepository(state.updateSettings.repositoryUrl);
+        const repo = updateRepository();
         if (repo) window.open(repo.url, '_blank', 'noopener');
         return;
       }
@@ -1041,6 +1242,15 @@
       }
       if (action === 'global-frame-cap-toggle') {
         requestGlobalFrameCap(state.globalFrameCap.enabled !== true, state.globalFrameCap.fps);
+        return;
+      }
+      if (action === 'account-frame-cap-toggle' || action === 'account-frame-cap-rate' || action === 'account-frame-cap-off') {
+        if (!workspaceId) { notify('这个实例没有可保存锁帧的账号环境。', 'error'); return; }
+        const account = managedInstances().find((item) => item.workspace?.id === workspaceId) || { workspace: { id: workspaceId } };
+        const cap = accountFrameCap(account);
+        if (action === 'account-frame-cap-off') requestAccountFrameCap(workspaceId, false, cap.fps);
+        else if (action === 'account-frame-cap-rate') requestAccountFrameCap(workspaceId, true, Number(buttonNode?.dataset.fps));
+        else requestAccountFrameCap(workspaceId, !cap.enabled, cap.fps);
         return;
       }
       if (action === 'window-toggle-all') {
@@ -1098,6 +1308,16 @@
       } else if (action === 'host') {
         const result = await post('/api/host', { port });
         notify(result.ok ? '游戏内助手安装已提交。' : (result.error || '安装没有开始'), result.ok ? '' : 'error');
+      } else if (action === 'detect-ports') {
+        await runDetectPorts();
+      } else if (action === 'deploy-helper') {
+        await runDeploy();
+      } else if (action === 'deploy-use-port') {
+        const selectedPort = buttonNode?.dataset.port || '';
+        state.deploy = { ...state.deploy, port: String(selectedPort) };
+        const portInput = $('#deploy-port');
+        if (portInput) portInput.value = selectedPort;
+        notify(`已填入控制端口 ${selectedPort}，可以直接点「一键部署」。`);
       } else if (action === 'rescan') {
         await api('/api/rescan');
         notify('实例扫描已完成。');
@@ -1316,6 +1536,22 @@
     window.chrome?.webview?.postMessage({ type: 'save-update-settings', settings: state.updateSettings });
   }
 
+  /* 单账号锁帧：先按输入更新本地状态，让卡片立刻反映锁定结果，再交给主机执行。 */
+  function requestAccountFrameCap(accountId, enabled, fps) {
+    if (!accountId) return;
+    const rate = Number(fps) === 30 ? 30 : 10;
+    const globalOn = state.globalFrameCap?.enabled === true;
+    state.frameCapAccounts = { ...(state.frameCapAccounts || {}), [accountId]: { enabled: enabled === true, fps: rate } };
+    closeMenus();
+    if (state.view === 'overview') renderOverview();
+    else if (state.view === 'settings' && state.config) renderSettings();
+    window.chrome?.webview?.postMessage({ type: 'set-account-frame-cap', account: accountId, enabled: enabled === true, fps: rate });
+    // 提示只说「这次真正改了什么」：全局开着时，关掉单账号只是把它排除在全局之外。
+    if (enabled === true) notify(`已为这个账号锁定 ${rate} 帧。`);
+    else if (globalOn) notify(`已单独关闭这个账号的锁帧，其他账号仍按全局 ${Number(state.globalFrameCap?.fps) === 30 ? 30 : 10} 帧锁定。`);
+    else notify('已解除这个账号的锁帧。');
+  }
+
   function requestGlobalFrameCap(enabled, fps) {
     const rate = Number(fps) === 30 ? 30 : 10;
     state.globalFrameCap = { enabled: enabled === true, fps: rate };
@@ -1325,7 +1561,15 @@
 
   function mergeGlobalFrameCapMessage(message) {
     if (message.settings && typeof message.settings === 'object') {
-      state.globalFrameCap = { ...state.globalFrameCap, ...message.settings };
+      const settings = message.settings;
+      state.globalFrameCap = { enabled: settings.enabled === true, fps: Number(settings.fps) === 30 ? 30 : 10 };
+      if (settings.accounts && typeof settings.accounts === 'object') {
+        const accounts = {};
+        for (const [id, value] of Object.entries(settings.accounts)) {
+          accounts[id] = { enabled: value?.enabled === true, fps: Number(value?.fps) === 30 ? 30 : 10 };
+        }
+        state.frameCapAccounts = accounts;
+      }
     }
     for (const status of message.statuses || []) {
       if (status?.port != null) state.frameCapStatuses[String(status.port)] = status;
@@ -1350,6 +1594,14 @@
       loadWikiEquipment();
       return;
     }
+    // 一键部署的分步进度：主机每完成一步就推一帧过来。
+    if (message.type === 'deploy-progress') {
+      if (Array.isArray(message.steps)) {
+        state.deploy = { ...state.deploy, steps: message.steps, busy: 'deploy' };
+        if (state.view === 'helpers') renderHelpers();
+      }
+      return;
+    }
     if (message.type === 'frame-cap-settings-loaded'
       || message.type === 'frame-cap-settings-updated'
       || message.type === 'frame-cap-account-statuses') {
@@ -1357,46 +1609,43 @@
       if (message.type === 'frame-cap-settings-updated') {
         const failures = Object.values(state.frameCapStatuses).some((status) =>
           Number(status.processId) > 0 && !status.applied && status.state !== 'waiting');
-        notify(globalFrameCapSummary(), failures ? 'error' : '');
+        notify(frameCapLockSummary(), failures ? 'error' : '');
       }
       return;
     }
     if (message.type === 'global-frame-cap-error') {
       notify(message.message || '全局锁帧设置没有保存。', 'error');
+      // 乐观更新可能已经画在卡片上了：让主机重发一次真实设置，避免界面与后端不一致。
+      window.chrome?.webview?.postMessage({ type: 'load-frame-cap-settings' });
       return;
     }
     if (message.type !== 'update-settings-loaded' && message.type !== 'update-settings-saved') return;
     state.updateSettings = { ...state.updateSettings, ...(message.settings || {}) };
+    if (!state.updateSettings.repositoryUrl) state.updateSettings.repositoryUrl = DEFAULT_REPOSITORY;
     updateGithubButton();
-    if (!githubRepository(state.updateSettings.repositoryUrl)) {
-      state.updateStatus = { kind: 'waiting', message: 'GitHub 仓库地址待配置。' };
-    }
     if (state.view === 'settings') renderSettings();
-    if (message.type === 'update-settings-loaded' && state.updateSettings.enabled && githubRepository(state.updateSettings.repositoryUrl)) {
+    if (message.type === 'update-settings-loaded' && state.updateSettings.enabled && updateRepository()) {
       setTimeout(() => checkForUpdates({ force: true, quiet: true }), 350);
     }
   }
 
   function saveUpdateSettings() {
-    const rawUrl = $('#update-repo-url')?.value.trim() || '';
-    const repo = githubRepository(rawUrl);
-    if (rawUrl && !repo) throw new Error('请输入有效的 github.com 仓库地址。');
     state.updateSettings = {
       ...state.updateSettings,
-      repositoryUrl: repo?.url || '',
+      // 仓库地址由客户端内置，界面不再允许（也不需要）修改。
+      repositoryUrl: state.updateSettings.repositoryUrl || DEFAULT_REPOSITORY,
       enabled: $('#update-enabled')?.checked !== false,
     };
-    if (!repo) state.updateStatus = { kind: 'waiting', message: 'GitHub 仓库地址待配置。' };
     persistUpdateSettings();
     renderSettings();
     notify('版本检测设置已保存。');
-    if (repo && state.updateSettings.enabled) checkForUpdates({ force: true, quiet: true });
+    if (state.updateSettings.enabled) checkForUpdates({ force: true, quiet: true });
   }
 
   async function checkForUpdates({ force = false, manual = false, quiet = true } = {}) {
-    const repo = githubRepository(state.updateSettings.repositoryUrl);
+    const repo = updateRepository();
     if (!repo) {
-      state.updateStatus = { kind: 'waiting', message: 'GitHub 仓库地址待配置。' };
+      state.updateStatus = { kind: 'error', message: '内置更新源不可用，暂时无法检测更新。' };
       if (state.view === 'settings') renderSettings();
       return;
     }
@@ -1535,7 +1784,7 @@
     window.chrome.webview.postMessage({ type: 'load-frame-cap-settings' });
   }
   loadWikiEquipment();
-  $('.footer-version').textContent = `v${APP_VERSION}`;
+  // 页脚不再显示版本（版本只在左下角「中控版本」露出一次）。
   $('#top-time').textContent = '--:--:--';
   clockTick();
   setInterval(clockTick, 1000);

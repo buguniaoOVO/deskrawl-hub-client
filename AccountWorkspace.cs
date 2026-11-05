@@ -69,6 +69,16 @@ internal sealed class AccountWorkspace : IDisposable
             : [];
     }
 
+    /// <summary>Sandboxie 运行环境（锁帧归属判定与助手部署都要用）。</summary>
+    internal SandboxRuntime Sandbox => _sandbox
+        ?? throw new InvalidOperationException("Sandboxie 运行环境尚未就绪，请稍后重试。");
+
+    /// <summary>最近一次扫描得到的账号快照（只读用途，例如锁帧的端口归属判定）。</summary>
+    internal WorkspaceAccount[] AccountsSnapshot() => _accounts;
+
+    /// <summary>助手控制端口的端口段判定（8766 起、每 10 个一个）。</summary>
+    internal static bool IsControlPort(int port) => port >= 8766 && port <= 8996 && (port - 8766) % 10 == 0;
+
     internal static string Id(string box) => box.Length == 0 ? "host" : "box:" + box;
     private static string Name(string box) => box.Length == 0 ? "主机" : "沙箱 " + box;
     private AccountProfile Profile(string id) => _profiles.FirstOrDefault(p => Id(p.Sandbox).Equals(id, StringComparison.OrdinalIgnoreCase))
@@ -198,7 +208,6 @@ internal sealed class AccountWorkspace : IDisposable
             .ThenBy(a => a.Sandbox, StringComparer.OrdinalIgnoreCase).ToArray();
     }
 
-    private static bool IsControlPort(int port) => port >= 8766 && port <= 8996 && (port - 8766) % 10 == 0;
     private bool IsHelper(string root, string box) => File.Exists(_sandbox!.ResolveFile(Path.Combine(root, @"core\app\deskrawl_helper.py"), box))
         && File.Exists(_sandbox.ResolveFile(Path.Combine(root, @"runtime\pythonw.exe"), box));
     private IEnumerable<string> HelperChildren(string parent, string box)
@@ -262,6 +271,27 @@ internal sealed class AccountWorkspace : IDisposable
             profile.GameExecutable = game;
             profile.GameLaunchMode = mode;
             Save();
+        }
+        finally { _gate.Release(); }
+    }
+
+    /// <summary>
+    /// 部署助手之后把目录写回账号档案（配对指纹一并刷新）。与 SaveProfileAsync 的区别是它不碰游戏启动设置，
+    /// 也不会因为目录校验不通过而拒绝——部署流程自己已经校验过目录结构。
+    /// </summary>
+    internal async Task<WorkspaceAccount[]> RecordDeployedHelperAsync(string id, string helperDirectory)
+    {
+        await _gate.WaitAsync();
+        try
+        {
+            await RefreshCoreAsync(false);
+            var profile = Profile(id);
+            string directory = (helperDirectory ?? "").Trim();
+            if (directory.Length == 0) throw new InvalidOperationException("助手目录不能为空。");
+            profile.HelperDirectory = directory;
+            profile.PairingFingerprint = Fingerprint(directory, profile.Sandbox);
+            Save();
+            return await RefreshCoreAsync(true);
         }
         finally { _gate.Release(); }
     }

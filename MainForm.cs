@@ -25,9 +25,12 @@ internal sealed class MainForm : Form
         RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
     private static readonly Color Canvas = Color.White;
 
+    // 更新检测在界面上不再要求用户填仓库地址：默认内置官方仓库，配置文件里的空值也回落到它。
+    private const string DefaultUpdateRepositoryUrl = "https://github.com/buguniaoOVO/deskrawl-hub-client";
+
     private sealed record ClientUpdateSettings
     {
-        public string RepositoryUrl { get; init; } = "";
+        public string RepositoryUrl { get; init; } = DefaultUpdateRepositoryUrl;
         public bool Enabled { get; init; } = true;
         public string IgnoredVersion { get; init; } = "";
         public long LastCheckedUtc { get; init; }
@@ -78,8 +81,12 @@ internal sealed class MainForm : Form
     private AccountWorkspace? _workspace;
     private HelperPane? _helperPane;
     private FrameCapLiveManager? _frameCapManager;
+    private DeployManager? _deployManager;
     private System.Threading.Timer? _frameCapSyncTimer;
     private readonly SemaphoreSlim _frameCapSyncGate = new(1, 1);
+    // 账号归属判定用的工作区快照：按端口给锁帧目标找到账号 id。最多 15 秒复用一次，避免定时同步反复扫描进程。
+    private WorkspaceAccount[] _frameCapAccounts = [];
+    private DateTime _frameCapAccountsAt = DateTime.MinValue;
 
     internal MainForm()
     {
@@ -128,6 +135,7 @@ internal sealed class MainForm : Form
             StartEngine(runtime.EnginePath, runtime.EngineDirectory, _port);
             await WaitForEngineAsync(_port);
             _workspace = new AccountWorkspace(_dataRoot, _engineConfigPath, _port);
+            _deployManager = new DeployManager(_dataRoot, _workspace, WriteLog);
             await SyncFrameCapAccountsAsync(publishStatus: false);
             _frameCapSyncTimer = new System.Threading.Timer(
                 _ => _ = SyncFrameCapAccountsAsync(), null, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(10));
@@ -267,14 +275,22 @@ internal sealed class MainForm : Form
             {
                 _ = SetGlobalFrameCapAsync(accountEnabledElement.GetBoolean(), accountFps, core);
             }
+            else if (type == "set-account-frame-cap")
+            {
+                if (TryReadAccountFrameCap(root, out string frameCapAccount, out bool frameCapEnabled, out int frameCapFps))
+                    _ = SetAccountFrameCapAsync(frameCapAccount, frameCapEnabled, frameCapFps, core);
+                else
+                    PostFrameCapError(core, "账号锁帧设置没有保存：缺少账号、开关或帧率。");
+            }
             else if (type == "save-update-settings"
                 && root.TryGetProperty("settings", out var settingsElement))
             {
                 var settings = JsonSerializer.Deserialize<ClientUpdateSettings>(
                     settingsElement.GetRawText(), ClientSettingsJsonOptions) ?? new ClientUpdateSettings();
+                string savedRepository = NormalizeGithubRepository(settings.RepositoryUrl);
                 settings = settings with
                 {
-                    RepositoryUrl = NormalizeGithubRepository(settings.RepositoryUrl),
+                    RepositoryUrl = savedRepository.Length > 0 ? savedRepository : DefaultUpdateRepositoryUrl,
                     IgnoredVersion = settings.IgnoredVersion?.Trim() ?? "",
                     LastCheckedUtc = Math.Max(0, settings.LastCheckedUtc),
                 };
@@ -288,6 +304,23 @@ internal sealed class MainForm : Form
         {
             WriteLog("Client settings message failed: " + ex.Message);
         }
+    }
+
+    /// <summary>解析 {type:'set-account-frame-cap', account, enabled, fps}；任何一项缺失都返回 false。</summary>
+    private static bool TryReadAccountFrameCap(JsonElement root, out string account, out bool enabled, out int fps)
+    {
+        account = "";
+        enabled = false;
+        fps = 0;
+        if (!root.TryGetProperty("account", out JsonElement accountElement)
+            || accountElement.ValueKind != JsonValueKind.String) return false;
+        account = accountElement.GetString() ?? "";
+        if (account.Length == 0) return false;
+        if (!root.TryGetProperty("enabled", out JsonElement enabledElement)
+            || enabledElement.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) return false;
+        enabled = enabledElement.GetBoolean();
+        if (!root.TryGetProperty("fps", out JsonElement fpsElement) || !fpsElement.TryGetInt32(out fps)) return false;
+        return fps is 10 or 30;
     }
 
     private async Task HandleWorkspaceRequestAsync(CoreWebView2 core, JsonElement request)
@@ -333,6 +366,21 @@ internal sealed class MainForm : Form
                     result = await _workspace.AddAccountAsync(
                         request.TryGetProperty("sandbox", out var sandboxValue) ? sandboxValue.GetString() ?? "" : "");
                     break;
+                case "detect-ports":
+                    result = await Deploy().DetectPortsAsync(
+                        request.TryGetProperty("sandbox", out JsonElement portSandbox) ? portSandbox.GetString() ?? "" : "");
+                    break;
+                case "deploy-helper":
+                    result = await Deploy().DeployHelperAsync(
+                        new DeployHelperRequest(
+                            request.TryGetProperty("sandbox", out JsonElement deploySandbox) ? deploySandbox.GetString() ?? "" : "",
+                            request.TryGetProperty("port", out JsonElement deployPort) && deployPort.TryGetInt32(out int deployPortValue)
+                                ? deployPortValue : 0,
+                            request.TryGetProperty("packagePath", out JsonElement deployPackage) ? deployPackage.GetString() ?? "" : "",
+                            request.TryGetProperty("packageUrl", out JsonElement deployUrl) ? deployUrl.GetString() ?? "" : "",
+                            request.TryGetProperty("mode", out JsonElement deployMode) ? deployMode.GetString() ?? "" : ""),
+                        steps => PostDeployProgress(core, requestId, steps));
+                    break;
                 case "browse-helper":
                     using (var dialog = new FolderBrowserDialog { Description = "选择此环境的 X1X 助手目录", UseDescriptionForTitle = true })
                         result = new { path = dialog.ShowDialog(this) == DialogResult.OK ? dialog.SelectedPath : "" };
@@ -374,6 +422,32 @@ internal sealed class MainForm : Form
         }
     }
 
+    private DeployManager Deploy() =>
+        _deployManager ?? throw new InvalidOperationException("部署模块尚未就绪，请稍后重试。");
+
+    /// <summary>部署进度：每完成一步推一次，前端按 steps 逐条更新。</summary>
+    private void PostDeployProgress(CoreWebView2 core, string requestId, DeployStep[] steps)
+    {
+        if (_closing || IsDisposed) return;
+        try
+        {
+            BeginInvoke((Action)(() =>
+            {
+                try
+                {
+                    core.PostWebMessageAsJson(JsonSerializer.Serialize(new
+                    {
+                        type = "deploy-progress",
+                        requestId,
+                        steps,
+                    }, ClientSettingsJsonOptions));
+                }
+                catch (InvalidOperationException) { }
+            }));
+        }
+        catch (InvalidOperationException) { }
+    }
+
     private void CloseHelperPane()
     {
         _helperPane?.Dispose();
@@ -383,10 +457,11 @@ internal sealed class MainForm : Form
 
     private ClientUpdateSettings ReadClientUpdateSettings()
     {
+        ClientUpdateSettings settings = new();
         try
         {
             if (File.Exists(_clientSettingsPath))
-                return JsonSerializer.Deserialize<ClientUpdateSettings>(
+                settings = JsonSerializer.Deserialize<ClientUpdateSettings>(
                     File.ReadAllText(_clientSettingsPath, Encoding.UTF8), ClientSettingsJsonOptions)
                     ?? new ClientUpdateSettings();
         }
@@ -394,7 +469,11 @@ internal sealed class MainForm : Form
         {
             WriteLog("Client settings read failed: " + ex.Message);
         }
-        return new ClientUpdateSettings();
+        // 仓库地址为空时用内置仓库，更新检测不会因为缺配置而空转。
+        string repository = NormalizeGithubRepository(settings.RepositoryUrl);
+        return repository.Length > 0
+            ? settings with { RepositoryUrl = repository }
+            : settings with { RepositoryUrl = DefaultUpdateRepositoryUrl };
     }
 
     private static void PostClientUpdateSettings(CoreWebView2 core, string type, ClientUpdateSettings settings)
@@ -413,38 +492,16 @@ internal sealed class MainForm : Form
 
         try
         {
-            using HttpResponseMessage response = await _http.GetAsync(
-                $"http://127.0.0.1:{_port}/api/overview").ConfigureAwait(false);
-            if (!response.IsSuccessStatusCode) return [];
-            using JsonDocument document = JsonDocument.Parse(await response.Content.ReadAsStringAsync().ConfigureAwait(false));
-            if (!document.RootElement.TryGetProperty("instances", out JsonElement instances)
-                || instances.ValueKind != JsonValueKind.Array)
-                return [];
-
-            var processByPort = new Dictionary<int, int>();
-            foreach (JsonElement instance in instances.EnumerateArray())
-            {
-                if (!instance.TryGetProperty("port", out JsonElement portElement)
-                    || !portElement.TryGetInt32(out int port) || port <= 0)
-                    continue;
-                int pid = 0;
-                if (instance.TryGetProperty("game", out JsonElement game)
-                    && game.ValueKind == JsonValueKind.Object
-                    && game.TryGetProperty("running", out JsonElement running)
-                    && running.ValueKind == JsonValueKind.True
-                    && game.TryGetProperty("pid", out JsonElement pidElement)
-                    && pidElement.TryGetInt32(out int gamePid))
-                    pid = gamePid;
-                processByPort[port] = pid;
-            }
+            Dictionary<int, FrameCapPortTarget>? targets = await ReadFrameCapTargetsAsync().ConfigureAwait(false);
+            if (targets is null) return [];
 
             AccountFrameCapStatus[] changes = await _frameCapManager
-                .SyncAccountProcessesAsync(processByPort).ConfigureAwait(false);
+                .SyncAccountProcessesAsync(targets).ConfigureAwait(false);
             if (publishStatus && changes.Length > 0 && _webCore is { } core && !IsDisposed)
             {
                 try
                 {
-                BeginInvoke((Action)(() => PostGlobalFrameCapState(core, "frame-cap-account-statuses", changes)));
+                    BeginInvoke((Action)(() => PostGlobalFrameCapState(core, "frame-cap-account-statuses", changes)));
                 }
                 catch (InvalidOperationException) { }
             }
@@ -459,6 +516,227 @@ internal sealed class MainForm : Form
         {
             _frameCapSyncGate.Release();
         }
+    }
+
+    /// <summary>
+    /// 组装「端口 → 游戏进程 + 账号」：游戏进程来自 /api/overview，账号归属来自工作区快照
+    /// （WorkspaceAccount.Id / ControlPort / GamePids）。两边都对不上时账号留空，只按全局设置走，
+    /// 不会把某个账号的覆盖项套到别的账号头上。
+    /// </summary>
+    private async Task<Dictionary<int, FrameCapPortTarget>?> ReadFrameCapTargetsAsync()
+    {
+        var gameByPort = new Dictionary<int, int>();
+        using (HttpResponseMessage response = await _http.GetAsync(
+            $"http://127.0.0.1:{_port}/api/overview").ConfigureAwait(false))
+        {
+            if (!response.IsSuccessStatusCode) return null;
+            using JsonDocument document = JsonDocument.Parse(
+                await response.Content.ReadAsStringAsync().ConfigureAwait(false));
+            if (!document.RootElement.TryGetProperty("instances", out JsonElement instances)
+                || instances.ValueKind != JsonValueKind.Array)
+                return null;
+
+            foreach (JsonElement instance in instances.EnumerateArray())
+            {
+                if (!instance.TryGetProperty("port", out JsonElement portElement)
+                    || !portElement.TryGetInt32(out int port) || port <= 0)
+                    continue;
+                int pid = 0;
+                if (instance.TryGetProperty("game", out JsonElement game)
+                    && game.ValueKind == JsonValueKind.Object
+                    && game.TryGetProperty("running", out JsonElement running)
+                    && running.ValueKind == JsonValueKind.True
+                    && game.TryGetProperty("pid", out JsonElement pidElement)
+                    && pidElement.TryGetInt32(out int gamePid))
+                    pid = gamePid;
+                gameByPort[port] = pid;
+            }
+        }
+
+        WorkspaceAccount[] accounts = await ReadFrameCapAccountsAsync().ConfigureAwait(false);
+        var ownerByPort = new Dictionary<int, WorkspaceAccount>();
+        foreach (WorkspaceAccount account in accounts)
+            if (account.ControlPort > 0) ownerByPort[account.ControlPort] = account;
+
+        var targets = new Dictionary<int, FrameCapPortTarget>();
+        // 所有沙盘的盒根，一次同步只查一遍：SbieApi 每次调用都要过驱动。
+        string[] boxRoots = BoxRootsForSync();
+        foreach ((int port, int processId) in gameByPort)
+        {
+            string accountId = "";
+            if (ownerByPort.TryGetValue(port, out WorkspaceAccount? owner))
+            {
+                // 端口一致，但游戏进程不属于该账号时说明工作区快照过期：宁可回落到全局，也不套用别人的设置。
+                bool pidAgrees = processId <= 0
+                    || owner.GamePids.Length == 0
+                    || owner.GamePids.Contains(processId);
+                if (pidAgrees) accountId = owner.Id;
+            }
+            targets[port] = new FrameCapPortTarget(port, processId, accountId, boxRoots);
+        }
+
+        // 工作区里已经有控制端口、但引擎概览暂时没列出的账号：只在游戏进程能唯一确定时补上。
+        foreach (WorkspaceAccount account in ownerByPort.Values)
+        {
+            if (targets.ContainsKey(account.ControlPort)) continue;
+            targets[account.ControlPort] = new FrameCapPortTarget(account.ControlPort,
+                account.GamePids.Length == 1 ? account.GamePids[0] : 0, account.Id, boxRoots);
+        }
+
+        return targets;
+    }
+
+    private DateTime _boxRootsAt;
+    private string[] _boxRoots = [];
+    private string _boxRootsSignature = "";
+
+    /// <summary>
+    /// 所有沙盘的盒根（SbieApi_QueryBoxPath 的真实目录，可能不在 C:\Sandbox）。
+    /// 沙箱里的游戏把锁帧回执写在盒子内，主机侧读不到，必须按盒根换算路径；
+    /// 回执文件名带 PID、只认本进程号，所以一次把所有盒根都给出去也不会串号。
+    /// </summary>
+    private string[] BoxRootsForSync()
+    {
+        if (_boxRoots.Length > 0 && DateTime.UtcNow - _boxRootsAt < TimeSpan.FromSeconds(30)) return _boxRoots;
+        var roots = new List<string>();
+        var diagnostic = new StringBuilder();
+        try
+        {
+            SandboxRuntime? sandbox = _workspace?.Sandbox;
+            if (sandbox is null)
+            {
+                diagnostic.Append("workspace=null;");
+            }
+            else
+            {
+                string[] boxes = sandbox.Boxes();
+                diagnostic.Append("boxes=").Append(boxes.Length);
+                foreach (string box in boxes)
+                {
+                    string root = sandbox.Root(box);
+                    diagnostic.Append("|").Append(box).Append("->").Append(root.Length == 0 ? "?" : root);
+                    if (root.Length > 0 && Directory.Exists(root)) roots.Add(root);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            diagnostic.Append("sandbox-api-failed=").Append(ex.GetBaseException().Message);
+        }
+
+        // SbieApi 拿不到时按 Sandboxie 的默认布局兜底：<盘>:\Sandbox|SANDBOX[\用户]\<盒>。
+        // 盒根下面一定会有 user 或 drive 目录，用这个特征确认，避免把普通文件夹当成沙盘。
+        foreach (string drive in Environment.GetLogicalDrives())
+        {
+            foreach (string folder in new[] { "Sandbox", "SANDBOX" })
+            {
+                string basePath = Path.Combine(drive, folder);
+                if (!Directory.Exists(basePath)) continue;
+                foreach (string level1 in EnumerateDirectoriesSafe(basePath))
+                {
+                    if (LooksLikeBoxRoot(level1)) roots.Add(level1);
+                    foreach (string level2 in EnumerateDirectoriesSafe(level1))
+                        if (LooksLikeBoxRoot(level2)) roots.Add(level2);
+                }
+            }
+        }
+
+        string[] resolved = roots.Distinct(StringComparer.OrdinalIgnoreCase).Take(64).ToArray();
+        _boxRoots = resolved;
+        _boxRootsAt = DateTime.UtcNow;
+        // 只在结果变化时记一行：同步定时器每 10 秒就会走到这里。
+        string signature = string.Join("|", resolved) + "#" + diagnostic;
+        if (signature != _boxRootsSignature)
+        {
+            _boxRootsSignature = signature;
+            WriteLog($"Frame cap: 沙盘盒根 {resolved.Length} 个（{string.Join(" | ", resolved)}）{diagnostic}");
+        }
+        return _boxRoots;
+    }
+
+    private static IEnumerable<string> EnumerateDirectoriesSafe(string path)
+    {
+        try { return Directory.EnumerateDirectories(path).ToArray(); }
+        catch { return []; }
+    }
+
+    private static bool LooksLikeBoxRoot(string path)
+    {
+        try { return Directory.Exists(Path.Combine(path, "user")) || Directory.Exists(Path.Combine(path, "drive")); }
+        catch { return false; }
+    }
+
+    /// <summary>锁帧归属判定用的账号快照；15 秒内复用，避免同步定时器反复枚举进程。</summary>
+    private async Task<WorkspaceAccount[]> ReadFrameCapAccountsAsync()
+    {
+        if (_workspace is null) return [];
+        if (_frameCapAccounts.Length > 0
+            && DateTime.UtcNow - _frameCapAccountsAt < TimeSpan.FromSeconds(15))
+            return _frameCapAccounts;
+        try
+        {
+            WorkspaceAccount[] accounts = await _workspace.RefreshAsync().ConfigureAwait(false);
+            _frameCapAccounts = accounts;
+            _frameCapAccountsAt = DateTime.UtcNow;
+        }
+        catch (Exception ex)
+        {
+            if (!_closing) WriteLog("Frame-cap account snapshot failed: " + ex.GetBaseException().Message);
+        }
+        return _frameCapAccounts;
+    }
+
+    private async Task SetAccountFrameCapAsync(string accountId, bool enabled, int fps, CoreWebView2 responseCore)
+    {
+        try
+        {
+            if (_frameCapManager is null) throw new InvalidOperationException("锁帧设置尚未就绪。");
+            // 先把端口归属刷新一遍，保证单账号设置立刻作用到正确的端口上。
+            await SyncFrameCapAccountsAsync(publishStatus: false, waitForSync: true).ConfigureAwait(false);
+            AccountFrameCapStatus[] statuses = await _frameCapManager
+                .SetAccountLimitAsync(accountId, enabled, fps).ConfigureAwait(false);
+            if (!IsDisposed)
+            {
+                try
+                {
+                    BeginInvoke((Action)(() => PostGlobalFrameCapState(
+                        responseCore, "frame-cap-settings-updated", statuses)));
+                }
+                catch (InvalidOperationException) { }
+            }
+        }
+        catch (Exception ex)
+        {
+            WriteLog("Account frame-cap update failed: " + ex.GetBaseException().Message);
+            PostFrameCapError(responseCore, "账号锁帧设置没有保存：" + FrameCapErrorText(ex));
+        }
+    }
+
+    private static string FrameCapErrorText(Exception ex)
+    {
+        Exception inner = ex.GetBaseException();
+        return inner is ArgumentException ? inner.Message : "帧率或账号标识无效，请刷新后重试。";
+    }
+
+    private void PostFrameCapError(CoreWebView2 core, string message)
+    {
+        if (IsDisposed) return;
+        try
+        {
+            BeginInvoke((Action)(() =>
+            {
+                try
+                {
+                    core.PostWebMessageAsJson(JsonSerializer.Serialize(new
+                    {
+                        type = "global-frame-cap-error",
+                        message,
+                    }, ClientSettingsJsonOptions));
+                }
+                catch (InvalidOperationException) { }
+            }));
+        }
+        catch (InvalidOperationException) { }
     }
 
     private async Task SetGlobalFrameCapAsync(bool enabled, int fps, CoreWebView2 responseCore)
@@ -539,7 +817,7 @@ internal sealed class MainForm : Form
             AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate | DecompressionMethods.Brotli,
         };
         var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(15) };
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) DeskrawlHubClient/1.2");
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) DeskrawlHubClient/1.3");
         client.DefaultRequestHeaders.AcceptLanguage.ParseAdd("zh-CN,zh;q=0.9");
         return client;
     }
@@ -818,6 +1096,7 @@ internal sealed class MainForm : Form
         _workspace?.Dispose();
         _frameCapSyncTimer?.Dispose();
         _frameCapManager?.Dispose();
+        _deployManager?.Dispose();
         _http.Dispose();
         if (_ownsEngine && _engine is { HasExited: false })
         {

@@ -70,7 +70,8 @@ internal static class FrameCapLiveInjector
         FrameCapClientSettings settings,
         string settingsPath,
         string? pluginPath,
-        string dataRoot)
+        string dataRoot,
+        string[]? boxRoots = null)
     {
         try
         {
@@ -113,7 +114,7 @@ internal static class FrameCapLiveInjector
                 {
                     long invokedAtUtc = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
                     uint startCode = InvokePluginStart(target, loadedPlugin.FileName, settingsPath);
-                    if (!TryReadStatus(processId, settings, settingsPath, dataRoot, invokedAtUtc,
+                    if (!TryReadStatus(processId, settings, settingsPath, dataRoot, invokedAtUtc, boxRoots,
                         out FrameCapProcessResult? pluginStatus)
                         || pluginStatus is null || !pluginStatus.Success || pluginStatus.State != "disabled")
                     {
@@ -142,11 +143,12 @@ internal static class FrameCapLiveInjector
                     return new FrameCapProcessResult(false, "error", "游戏没有载入限帧组件。");
                 long invokedAtUtc = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
                 uint startCode = InvokePluginStart(target, currentPlugin.FileName, settingsPath);
-                if (TryReadStatus(processId, settings, settingsPath, dataRoot, invokedAtUtc, out FrameCapProcessResult? status))
+                if (TryReadStatus(processId, settings, settingsPath, dataRoot, invokedAtUtc, boxRoots, out FrameCapProcessResult? status))
                     return status!;
                 if (startCode != 0)
                     return new FrameCapProcessResult(false, "waiting", DescribeStartError(startCode));
-                return new FrameCapProcessResult(false, "waiting", "游戏暂未确认帧率设置。");
+                // 组件已经收下设置、只是还没回执：这和「等游戏启动」不是一回事，单独一种状态。
+                return new FrameCapProcessResult(false, "unconfirmed", "已下发锁帧设置，正在等游戏回执。");
             }
         }
         catch (ArgumentException)
@@ -317,6 +319,7 @@ internal static class FrameCapLiveInjector
         string settingsPath,
         string dataRoot,
         long invokedAtUtc,
+        string[]? boxRoots,
         out FrameCapProcessResult? result)
     {
         result = null;
@@ -333,6 +336,16 @@ internal static class FrameCapLiveInjector
         if (StatusPathByProcess.TryGetValue(processId, out string? cachedPath))
             candidates.Insert(0, cachedPath);
         candidates.AddRange(FindSandboxStatusPaths(currentName, legacyName));
+        // 本次目标所属沙盘的盒根（SbieApi_QueryBoxPath 给的真实目录，可能不在 C:\Sandbox）：
+        // 沙箱里的游戏把回执写在盒子内，这里才找得到。
+        foreach (string boxRoot in boxRoots ?? [])
+        {
+            foreach (string directory in BoxStatusDirectories(settingsPath, boxRoot))
+            {
+                candidates.Add(Path.Combine(directory, currentName));
+                candidates.Add(Path.Combine(directory, legacyName));
+            }
+        }
 
         foreach (string path in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
         {
@@ -346,16 +359,25 @@ internal static class FrameCapLiveInjector
                     continue;
                 string state = root.TryGetProperty("state", out JsonElement stateElement) ? stateElement.GetString() ?? "" : "";
                 string requestId = root.TryGetProperty("requestId", out JsonElement requestElement) ? requestElement.GetString() ?? "" : "";
-                if (!string.IsNullOrEmpty(requestId) && !requestId.Equals(settings.RequestId, StringComparison.Ordinal)) continue;
-                if (string.IsNullOrEmpty(requestId)
-                    && (!root.TryGetProperty("updatedAtUtc", out JsonElement updatedAt)
-                        || !updatedAt.TryGetInt64(out long statusTime)
-                        || statusTime < invokedAtUtc - 1)) continue;
+                long statusTime = root.TryGetProperty("updatedAtUtc", out JsonElement updatedAt)
+                    && updatedAt.TryGetInt64(out long parsedTime) ? parsedTime : 0;
+                // 沙箱里的游戏收到设置后要过一两秒才写回执，而每次重试都会换一个新的 requestId。
+                // 所以「请求号对得上」和「回执比本次下发更新且内容正是我们要的」都算确认，
+                // 否则沙箱游戏永远停留在「已下发、等回执」。
+                bool requestMatches = requestId.Length > 0 && requestId.Equals(settings.RequestId, StringComparison.Ordinal);
+                bool freshEnough = statusTime >= invokedAtUtc - 1;
+                if (!requestMatches && !freshEnough) continue;
                 string message = root.TryGetProperty("message", out JsonElement messageElement)
                     ? messageElement.GetString() ?? ""
                     : "";
-                bool applied = settings.Enabled && state == "applied";
-                bool disabled = !settings.Enabled && state == "disabled";
+                bool contentMatches = (!root.TryGetProperty("fps", out JsonElement fpsElement)
+                        || !fpsElement.TryGetInt32(out int statusFps) || statusFps == settings.Fps)
+                    && (!root.TryGetProperty("enabled", out JsonElement enabledElement)
+                        || enabledElement.ValueKind is not (JsonValueKind.True or JsonValueKind.False)
+                        || enabledElement.GetBoolean() == settings.Enabled);
+                bool confirmed = requestMatches || contentMatches;
+                bool applied = settings.Enabled && state == "applied" && confirmed;
+                bool disabled = !settings.Enabled && state == "disabled" && confirmed;
                 if (applied || disabled)
                 {
                     StatusPathByProcess[processId] = path;
@@ -379,6 +401,28 @@ internal static class FrameCapLiveInjector
             }
         }
         return false;
+    }
+
+    /// <summary>
+    /// 由盒根推出「同一个设置目录在沙箱里的影子位置」：用户目录走 user\current，
+    /// 盘符路径走 drive\&lt;盘符&gt;。Sandboxie 只重定向写入，所以主机看到的是原始目录、回执在盒子里。
+    /// </summary>
+    private static IEnumerable<string> BoxStatusDirectories(string settingsPath, string boxRoot)
+    {
+        if (string.IsNullOrWhiteSpace(boxRoot) || !Directory.Exists(boxRoot)) yield break;
+        var directories = new List<string>();
+        string? settingsDirectory = Path.GetDirectoryName(Path.GetFullPath(settingsPath));
+        if (!string.IsNullOrWhiteSpace(settingsDirectory)) directories.Add(settingsDirectory);
+        string user = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile).TrimEnd('\\');
+        if (user.Length > 0)
+            directories.Add(Path.Combine(user, "AppData", "Local", "DeskrawlHubClient", "frame-cap"));
+        foreach (string directory in directories.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (user.Length > 0 && directory.StartsWith(user + "\\", StringComparison.OrdinalIgnoreCase))
+                yield return Path.Combine(boxRoot, "user", "current", directory[(user.Length + 1)..]);
+            if (directory.Length > 3 && directory[1] == ':')
+                yield return Path.Combine(boxRoot, "drive", directory[..1], directory[3..]);
+        }
     }
 
     private static IEnumerable<string> FindSandboxStatusPaths(string currentName, string legacyName)
